@@ -14,7 +14,7 @@ Python3
 Flask
 
 On Ubuntu:
-apt install python3 python3-flask
+sudo apt install python3 python3-flask
 
 ## Running The Application
 python card_app.py
