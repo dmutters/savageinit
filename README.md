@@ -4,8 +4,9 @@ Savage Worlds Adventure Edition (SWADE) Initiative Tracker
 # This is very much a work-in-progress.
 
 # Installation & Use
-This can run on any computer with the correct dependencies installed.  
+This can run on any computer with the correct dependencies installed.
 The exact names of the dependencies and how to install them will vary depending on the operating system.
+
 This is being developed on an Ubuntu-based Linux distribution, and instructions are written accordingly.
 
 ## Dependencies
