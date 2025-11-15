@@ -393,6 +393,7 @@ HTML_TEMPLATE = '''
                     <button class="trait-button" data-trait="hesitant" onclick="toggleTrait(this)">Hesitant</button>
                 </div>
                 <button onclick="removeParticipant(this)">Remove</button>
+                <button class="deal-in-button" onclick="dealIn(${index})">Deal In</button>
             `;
             list.appendChild(row);
         }
@@ -447,7 +448,19 @@ HTML_TEMPLATE = '''
         }
         
         function removeParticipant(button) {
-            button.parentElement.remove();
+ //           button.parentElement.remove();
+            const row = button.parentElement;
+            const index = Array.from(row.parentElement.children).indexOf(row);
+
+            // Remove from server
+            fetch('/remove_participant', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({index})
+            })
+            .then(() => {
+                row.remove();
+            });
         }
         
         function renderParticipants() {
@@ -463,6 +476,11 @@ HTML_TEMPLATE = '''
                         const traitsArray = Array.isArray(p.traits) ? p.traits : [];
                         const hasHesitant = traitsArray.includes('hesitant');
                         const hasOthers = traitsArray.some(t => ['level_headed', 'improved_level_headed', 'quick'].includes(t));
+                        
+                        // Only show "Deal In" if participant hasn't drawn yet
+                        const dealInButton = !p.has_drawn
+                            ? `<button onclick="dealIn(${index})">Deal In</button>`
+                            : '';
                         
                         row.innerHTML = `
                             <input type="text" value="${p.name}" data-index="${index}">
@@ -490,6 +508,38 @@ HTML_TEMPLATE = '''
                         list.appendChild(row);
                     });
                 });
+        }
+
+        function dealIn(index) {
+            const row = document.querySelectorAll('.participant-row')[index];
+            const traitButtons = row.querySelectorAll('.trait-button.selected');
+            const traits = Array.from(traitButtons).map(btn => btn.dataset.trait);
+            const nameInput = row.querySelector('input[type="text"]');
+            const name = nameInput.value.trim();
+
+            if (!name) {
+                alert('Participant must have a name.');
+                return;
+            }
+
+            fetch('/deal_in', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({index, name, traits})
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.error) {
+                    alert(data.error);
+                } else {
+                    displayInitiative(data);
+                    updateDeckCount();
+                    if (isGM) renderParticipants();
+                    // Hide the Deal In button
+                    const dealInButton = row.querySelector('.deal-in-button');
+                    if (dealInButton) dealInButton.style.display = 'none';
+                }
+            });
         }
         
         function getParticipantsFromUI() {
@@ -734,7 +784,8 @@ def new_encounter():
             'cards': [],
             'active_card': None,
             'trait_display': get_traits_display(p_data.get('traits', [])),
-            'additional_cards': []
+            'additional_cards': [],
+            'has_drawn': False
         }
         participants.append(participant)
     
@@ -816,6 +867,16 @@ def clear_initiative():
     joker_drawn = False
     return jsonify({'participants': []})
 
+@app.route('/remove_participant', methods=['POST'])
+@gm_required
+def remove_participant():
+    global participants
+    data = request.json
+    index = data.get('index')
+    if 0 <= index < len(participants):
+        participants.pop(index)
+    return jsonify({'participants': participants})
+
 @app.route('/draw_additional', methods=['POST'])
 @gm_required
 def draw_additional():
@@ -846,6 +907,9 @@ def draw_additional():
                     participants[index]['active_card'] = card_dict
             else:
                 participants[index]['active_card'] = card_dict
+
+            # Mark participant as having drawn
+            participant['has_drawn'] = True
     
     # Re-sort by active card
     participants.sort(key=lambda p: (
@@ -863,6 +927,47 @@ def reset():
     participants = []
     joker_drawn = False
     return jsonify({'participants': []})
+
+@app.route('/deal_in', methods=['POST'])
+@gm_required
+def deal_in():
+    global participants, deck, joker_drawn
+    data = request.json
+    name = data.get('name')
+    traits = data.get('traits', [])
+
+    if not name:
+        return jsonify({'error': 'Participant name required'}), 400
+
+    participant = {
+        'name': name,
+        'traits': traits,
+        'cards': [],
+        'active_card': None,
+        'trait_display': get_traits_display(traits),
+        'additional_cards': [],
+        'has_drawn': True
+    }
+
+    # Draw cards according to traits
+    cards = draw_for_participant(traits)
+    participant['cards'] = cards
+    participant['active_card'] = determine_active_card(cards, traits, [])
+
+    if any(card['rank'] == 'Joker' for card in cards):
+        joker_drawn = True
+
+    # Always append new participant
+    participants.append(participant)
+
+    # Sort initiative
+    participants.sort(key=lambda p: (
+        p['active_card']['value'] if p['active_card'] else -1,
+        p['active_card']['suit_value'] if p['active_card'] else -1
+    ), reverse=True)
+
+    return jsonify({'participants': participants})
+
 
 @app.route('/get_initiative')
 def get_initiative():
