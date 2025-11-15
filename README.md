@@ -10,8 +10,7 @@ The exact names of the dependencies and how to install them will vary depending 
 This is being developed on an Ubuntu-based Linux distribution, and instructions are written accordingly.
 
 ## Dependencies
-Python3
-Flask
+Python3, Flask
 
 On Ubuntu:
 sudo apt install python3 python3-flask
