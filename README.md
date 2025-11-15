@@ -16,7 +16,7 @@ On Ubuntu:
 sudo apt install python3 python3-flask
 
 ## Running The Application
-python card_app.py
+python3 card_app.py
 
 (Stop the application with CTRL-C)
 
