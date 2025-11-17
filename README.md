@@ -10,24 +10,26 @@ The exact names of the dependencies and how to install them will vary depending 
 This is being developed on an Ubuntu-based Linux distribution, and instructions are written accordingly.
 
 ## Dependencies
-Python3
-Flask
+Python3, Flask
 
 On Ubuntu:
 sudo apt install python3 python3-flask
 
 ## Running The Application
-python card_app.py
+python3 card_app.py
 
 (Stop the application with CTRL-C)
 
 ## Using The Application
 The application will be hosted on port 5000 over HTTP.  It is accessed using a web browser.
+
 On the computer where it's hosted, go to: http://localhost:5000
+
 Other computers, go to: http://<hostaddress>:5000
 
 ## GM Login
 To make changes to initiative order, deal cards, etc., you must be logged in as the GM.
+
 The hardcoded GM password is: gamemaster
 
 IF YOU CHANGE THE PASSWORD, BE AWARE THAT IT IS BEING SENT "IN THE CLEAR".  DO NOT USE THE SAME PASSWORD FOR ANYTHING ELSE.
