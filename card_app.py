@@ -1,10 +1,17 @@
-from flask import Flask, render_template_string, request, jsonify, session
+from flask import Flask, render_template_string, request, jsonify, session, Response, stream_with_context
+from queue import Queue
+import threading
+import json
 from functools import wraps
 import random
 import secrets
 
 app = Flask(__name__)
 app.secret_key = secrets.token_hex(16)
+
+# SSE message queues for broadcasting updates
+message_queues = []
+message_queues_lock = threading.Lock()
 
 # Simple GM password (in production, use proper authentication)
 GM_PASSWORD = "gamemaster"
@@ -73,6 +80,24 @@ class Deck:
                 break
             drawn.append(self.cards.pop())
         return drawn
+    
+def serialize_participants(participants):
+    serialized = []
+    for p in participants:
+        serialized.append({
+            'name': p['name'],
+            'traits': p.get('traits', []),
+            'trait_display': p.get('trait_display'),
+            'has_drawn': p.get('has_drawn'),
+            'cards': [c if isinstance(c, dict) else c.to_dict() for c in p.get('cards', [])],
+            'additional_cards': [c if isinstance(c, dict) else c.to_dict() for c in p.get('additional_cards', [])],        
+            'active_card': (
+                p['active_card'] if isinstance(p.get('active_card'), dict)
+                else p.get('active_card').to_dict() if p.get('active_card')
+                else None
+            )
+        })
+    return serialized
 
 # Global state
 deck = Deck()
@@ -86,6 +111,24 @@ def gm_required(f):
             return jsonify({'error': 'GM authentication required'}), 403
         return f(*args, **kwargs)
     return decorated_function
+
+def broadcast_update():
+    """Broadcast state update to all connected clients"""
+    data = {
+        'participants': serialize_participants(participants),
+        'deck_remaining': len(deck.cards)
+    }
+    message = f"data: {json.dumps(data)}\n\n"
+
+    with message_queues_lock:
+        dead_queues = []
+        for q in message_queues:
+            try:
+                q.put(message)
+            except:
+                dead_queues.append(q)
+        for q in dead_queues:
+            message_queues.remove(q)
 
 HTML_TEMPLATE = '''
 <!DOCTYPE html>
@@ -280,7 +323,7 @@ HTML_TEMPLATE = '''
     
     <div id="loginSection" class="login-form hidden">
         <h3>GM Login</h3>
-        <input type="password" id="gmPassword" placeholder="Enter GM Password">
+        <input type="password" id="gmPassword" placeholder="Enter GM Password" onkeypress="if(event.key === 'Enter') login()">
         <button onclick="login()">Login</button>
         <div id="loginError" class="status-message hidden"></div>
     </div>
@@ -319,7 +362,7 @@ HTML_TEMPLATE = '''
         let isGM = false;
         
         function checkAuth() {
-            fetch('/check_auth')
+            return fetch('/check_auth')
                 .then(response => response.json())
                 .then(data => {
                     isGM = data.is_gm;
@@ -328,6 +371,7 @@ HTML_TEMPLATE = '''
                         document.getElementById('viewerNote').classList.remove('hidden');
                     }
                     loadInitiative();
+                    return data;
                 });
         }
         
@@ -396,6 +440,9 @@ HTML_TEMPLATE = '''
                 <button class="deal-in-button" onclick="dealIn(${index})">Deal In</button>
             `;
             list.appendChild(row);
+
+            const input = row.querySelector('input[type="text"]');
+            input.focus();
         }
         
         function toggleTrait(button) {
@@ -646,7 +693,6 @@ HTML_TEMPLATE = '''
                 } else {
                     displayInitiative(data);
                     updateDeckCount();
-//                    if (isGM) renderParticipants();
                     if (isGM && Array.isArray(data.participants) && data.participants.length > 0) {
                         renderParticipants();
                     }
@@ -724,15 +770,50 @@ HTML_TEMPLATE = '''
         }
         
         // Auto-refresh for non-GM users
-        function startAutoRefresh() {
-            if (!isGM) {
-                setInterval(loadInitiative, 2000);
+        //function startAutoRefresh() {
+        //    if (!isGM) {
+        //        setInterval(loadInitiative, 2000);
+        //    }
+        //}
+
+        let eventSource = null;
+
+        function setupSSE() {
+            if (eventSource) {
+                eventSource.close();
             }
-        }
-        
-        // Initialize
-        checkAuth();
-        setTimeout(startAutoRefresh, 1000);
+
+            eventSource = new EventSource('/stream');
+
+            eventSource.onopen = function() {
+                console.log('Connected to server');
+            };
+
+            eventSource.onmessage = function(event) {
+                console.log('Received update:', event.data);
+                const data = JSON.parse(event.data);
+                displayInitiative({participants: data.participants});
+                const deckCountElem = document.getElementById('deckCount');
+                if (deckCountElem) {
+                    deckCountElem.textContent = data.deck_remaining;
+                }
+                if (isGM && document.getElementById('participantList')) {
+                    renderParticipants();
+                }
+            };
+
+            eventSource.onerror = function() {
+                console.log('Connection lost, reconnecting...');
+                eventSource.close();
+                setTimeout(setupSSE, 3000);
+            };
+            }
+
+        // Initialize at page load
+        checkAuth().then(() => {
+            setupSSE();
+});
+
     </script>
 </body>
 </html>
@@ -741,6 +822,36 @@ HTML_TEMPLATE = '''
 @app.route('/')
 def index():
     return render_template_string(HTML_TEMPLATE)
+
+@app.route('/stream')
+def stream():
+    def event_stream():
+        q = Queue()
+        with message_queues_lock:
+            message_queues.append(q)
+        try:
+            # Send initial state
+            initial_data = {
+                'participants': serialize_participants(participants),
+                'deck_remaining': len(deck.cards)
+            }
+            yield f"data: {json.dumps(initial_data)}\n\n"
+
+            # Keep connection alive and send updates
+            while True:
+                try:
+                    message = q.get(timeout=15)
+                    yield message
+                except:
+                    # heartbeat to prevent buffering/timeout
+                    yield ": ping\n\n"
+        finally:
+            with message_queues_lock:
+                if q in message_queues:
+                    message_queues.remove(q)
+
+    return Response(stream_with_context(event_stream()), mimetype='text/event-stream')
+
 
 @app.route('/check_auth')
 def check_auth():
@@ -789,7 +900,8 @@ def new_encounter():
         }
         participants.append(participant)
     
-    return jsonify({'participants': participants})
+    broadcast_update()
+    return jsonify({'participants': serialize_participants(participants)})
 
 @app.route('/next_round', methods=['POST'])
 @gm_required
@@ -830,7 +942,8 @@ def next_round():
         p['active_card']['suit_value'] if p['active_card'] else -1
     ), reverse=True)
     
-    return jsonify({'participants': participants})
+    broadcast_update()
+    return jsonify({'participants': serialize_participants(participants)})
 
 @app.route('/reset_deck', methods=['POST'])
 @gm_required
@@ -856,7 +969,8 @@ def reset_deck():
         }
         participants.append(participant)
     
-    return jsonify({'participants': participants})
+    broadcast_update()
+    return jsonify({'participants': serialize_participants(participants)})
 
 @app.route('/clear_initiative', methods=['POST'])
 @gm_required
@@ -865,6 +979,7 @@ def clear_initiative():
     deck = Deck()
     participants = []
     joker_drawn = False
+    broadcast_update()
     return jsonify({'participants': []})
 
 @app.route('/remove_participant', methods=['POST'])
@@ -875,7 +990,8 @@ def remove_participant():
     index = data.get('index')
     if 0 <= index < len(participants):
         participants.pop(index)
-    return jsonify({'participants': participants})
+    broadcast_update()
+    return jsonify({'participants': serialize_participants(participants)})
 
 @app.route('/draw_additional', methods=['POST'])
 @gm_required
@@ -909,7 +1025,7 @@ def draw_additional():
                 participants[index]['active_card'] = card_dict
 
             # Mark participant as having drawn
-            participant['has_drawn'] = True
+            participants[index]['has_drawn'] = True
     
     # Re-sort by active card
     participants.sort(key=lambda p: (
@@ -917,7 +1033,8 @@ def draw_additional():
         p['active_card']['suit_value'] if p['active_card'] else -1
     ), reverse=True)
     
-    return jsonify({'participants': participants})
+    broadcast_update()
+    return jsonify({'participants': serialize_participants(participants)})
 
 @app.route('/reset', methods=['POST'])
 @gm_required
@@ -926,6 +1043,7 @@ def reset():
     deck = Deck()
     participants = []
     joker_drawn = False
+    broadcast_update()
     return jsonify({'participants': []})
 
 @app.route('/deal_in', methods=['POST'])
@@ -966,12 +1084,13 @@ def deal_in():
         p['active_card']['suit_value'] if p['active_card'] else -1
     ), reverse=True)
 
-    return jsonify({'participants': participants})
+    broadcast_update()
+    return jsonify({'participants': serialize_participants(participants)})
 
 
 @app.route('/get_initiative')
 def get_initiative():
-    return jsonify({'participants': participants})
+    return jsonify({'participants': serialize_participants(participants)})
 
 @app.route('/deck_info')
 def deck_info():
@@ -1058,4 +1177,4 @@ def get_traits_display(traits):
     return ', '.join([trait_names.get(t, t) for t in traits]) if traits else ''
 
 if __name__ == '__main__':
-    app.run(debug=True, port=5000, host='0.0.0.0')
+    app.run(debug=True, port=5000, host='0.0.0.0', threaded=True)
