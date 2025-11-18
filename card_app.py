@@ -124,7 +124,7 @@ def broadcast_update():
         dead_queues = []
         for q in message_queues:
             try:
-                q.put_nowait(message)
+                q.put(message)
             except:
                 dead_queues.append(q)
         for q in dead_queues:
@@ -424,16 +424,70 @@ HTML_TEMPLATE = '''
         }
         
         function addParticipant() {
-                    // Send a request to the server to add an unnamed participant placeholder
-                    fetch('/add_participant_placeholder', {
-                        method: 'POST',
-                        headers: {'Content-Type': 'application/json'},
-                        body: JSON.stringify({}) // Send empty body, server handles name creation
-                    })
-                    .then(response => response.json())
-                    .then(data => {
-                        if (!data.success) {
-                            alert(data.error || "Failed to add participant.");
+            const list = document.getElementById('participantList');
+            const index = list.children.length;
+            const row = document.createElement('div');
+            row.className = 'participant-row';
+            row.innerHTML = `
+                <input type="text" placeholder="Participant name" data-index="${index}">
+                <div class="trait-buttons">
+                    <button class="trait-button" data-trait="level_headed" onclick="toggleTrait(this)">Level Headed</button>
+                    <button class="trait-button" data-trait="improved_level_headed" onclick="toggleTrait(this)">Improved Level Headed</button>
+                    <button class="trait-button" data-trait="quick" onclick="toggleTrait(this)">Quick</button>
+                    <button class="trait-button" data-trait="hesitant" onclick="toggleTrait(this)">Hesitant</button>
+                </div>
+                <button onclick="removeParticipant(this)">Remove</button>
+                <button class="deal-in-button" onclick="dealIn(${index})">Deal In</button>
+            `;
+            list.appendChild(row);
+
+            const input = row.querySelector('input[type="text"]');
+            input.focus();
+        }
+        
+        function toggleTrait(button) {
+            const row = button.closest('.participant-row');
+            const traitButtons = row.querySelectorAll('.trait-button');
+            const trait = button.dataset.trait;
+            
+            // Toggle selection
+            button.classList.toggle('selected');
+            
+            // Handle Hesitant conflicts
+            if (trait === 'hesitant' && button.classList.contains('selected')) {
+                // Deselect and disable conflicting traits
+                traitButtons.forEach(btn => {
+                    if (['level_headed', 'improved_level_headed', 'quick'].includes(btn.dataset.trait)) {
+                        btn.classList.remove('selected');
+                        btn.disabled = true;
+                    }
+                });
+            } else if (trait === 'hesitant' && !button.classList.contains('selected')) {
+                // Re-enable traits when Hesitant is deselected
+                traitButtons.forEach(btn => {
+                    if (['level_headed', 'improved_level_headed', 'quick'].includes(btn.dataset.trait)) {
+                        btn.disabled = false;
+                    }
+                });
+            } else if (['level_headed', 'improved_level_headed', 'quick'].includes(trait) && button.classList.contains('selected')) {
+                // If selecting these, deselect and disable Hesitant
+                traitButtons.forEach(btn => {
+                    if (btn.dataset.trait === 'hesitant') {
+                        btn.classList.remove('selected');
+                        btn.disabled = true;
+                    }
+                });
+            } else if (['level_headed', 'improved_level_headed', 'quick'].includes(trait) && !button.classList.contains('selected')) {
+                // Check if any of these traits are still selected
+                const anySelected = Array.from(traitButtons).some(btn => 
+                    ['level_headed', 'improved_level_headed', 'quick'].includes(btn.dataset.trait) && 
+                    btn.classList.contains('selected')
+                );
+                if (!anySelected) {
+                    // Re-enable Hesitant
+                    traitButtons.forEach(btn => {
+                        if (btn.dataset.trait === 'hesitant') {
+                            btn.disabled = false;
                         }
                         // Server broadcast handles the UI redraw and focus restoration
                     });
@@ -940,6 +994,7 @@ HTML_TEMPLATE = '''
             };
 
             eventSource.onmessage = function(event) {
+                console.log('Received update:', event.data);
                 const data = JSON.parse(event.data);
                 displayInitiative({participants: data.participants});
                 const deckCountElem = document.getElementById('deckCount');
@@ -952,11 +1007,11 @@ HTML_TEMPLATE = '''
             };
 
             eventSource.onerror = function() {
-                console.log('Connection lost, reconnecting...', error);
+                console.log('Connection lost, reconnecting...');
                 eventSource.close();
                 setTimeout(setupSSE, 3000);
             };
-        }
+            }
 
         // Initialize at page load
         checkAuth().then(() => {
@@ -991,11 +1046,9 @@ def stream():
                 try:
                     message = q.get(timeout=15)
                     yield message
-                except Exception:
+                except:
                     # heartbeat to prevent buffering/timeout
                     yield ": ping\n\n"
-        except GeneratorExit:
-            pass
         finally:
             with message_queues_lock:
                 if q in message_queues:
@@ -1341,8 +1394,6 @@ def deal_in():
 
     broadcast_update()
     return jsonify({'participants': serialize_participants(participants)})
-
-
 
 
 @app.route('/get_initiative')
