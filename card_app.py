@@ -27,15 +27,15 @@ class Card:
     def value(self):
         """Return numeric value for sorting"""
         if self.rank == 'Joker':
-            return 14
+            return 15
         elif self.rank == 'A':
-            return 13
+            return 14
         elif self.rank == 'K':
-            return 12
+            return 13
         elif self.rank == 'Q':
-            return 11
+            return 12
         elif self.rank == 'J':
-            return 10
+            return 11
         else:
             return int(self.rank)
     
