@@ -25,7 +25,7 @@ The application will be hosted on port 5000 over HTTP.  It is accessed using a w
 
 On the computer where it's hosted, go to: http://localhost:5000
 
-Other computers, go to: http://<hostaddress>:5000
+Other computers, go to: http://\<hostaddress\>:5000
 
 ## GM Login
 To make changes to initiative order, deal cards, etc., you must be logged in as the GM.
