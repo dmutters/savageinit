@@ -20,6 +20,9 @@ python3 card_app.py
 
 (Stop the application with CTRL-C)
 
+## SystemD Service
+To run the application persistently in the background, follow the instructions found in savageinit.service.
+
 ## Using The Application
 The application will be hosted on port 5000 over HTTP.  It is accessed using a web browser.
 
