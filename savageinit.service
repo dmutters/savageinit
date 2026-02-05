@@ -1,0 +1,30 @@
+# savageinit.service
+#
+# Copy this into "/etc/systemd/system/".
+# Then run the following commands to activate it:
+# sudo systemctl daemon-reload
+# sudo systemctl enable --now savageinit.service
+#
+# To stop the service, run this:
+# sudo systemctl stop savageinit.service
+#
+# To disable the service, run this:
+# sudo systemctl disable --now savageinit.service
+
+[Unit]
+Description=SavageInit Initiative Tracker
+Wants=network-online.target
+After=network.target network-online.target
+
+[Service]
+# Set User to a non-root user:
+User=YourUserName
+# Modify WorkingDirectory to point to where card_app.py is:
+WorkingDirectory=/mnt/media/savageinit/
+# Modify ExecStart to point to the locations of python3 and card_app.py
+ExecStart=/usr/bin/python3 /mnt/media/savageinit/card_app.py
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
