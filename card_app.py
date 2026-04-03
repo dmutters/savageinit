@@ -351,7 +351,7 @@ HTML_TEMPLATE = '''
         <div id="gmSection" class="gm-section hidden">
             <h3>GM Controls</h3>
             <div class="gm-controls">
-                <button onclick="newEncounter()">New Encounter</button>
+               <!-- <button onclick="newEncounter()">New Encounter</button> -->
                 <button onclick="nextRound()">Next Round</button>
                 <button onclick="resetDeck()">Reset Deck</button>
                 <button onclick="clearInitiative()">Clear Initiative</button>
@@ -782,7 +782,7 @@ HTML_TEMPLATE = '''
             return participants;
         }
         
-        function newEncounter() {
+        /* function newEncounter() {
             const participants = getParticipantsFromUI();
             if (participants.length === 0) {
                 alert('Please add participants first');
@@ -804,7 +804,7 @@ HTML_TEMPLATE = '''
                     if (isGM) renderParticipants();
                 }
             });
-        }
+        } */
         
         function resetDeck() {
             const participants = getParticipantsFromUI();
@@ -1128,38 +1128,38 @@ def update_participant_traits():
 
     return jsonify({'error': 'Invalid participant index'}), 400
 
-@app.route('/new_encounter', methods=['POST'])
-@gm_required
-def new_encounter():
-    global participants, deck, joker_drawn
-    
-    # 1. Get participant data from the client (UI)
-    data = request.json
-    participants_data = data.get('participants', [])
-
-    # 2. Re-initialize the global participants list based on the UI data
-    new_participants = []
-    for p_data in participants_data:
-        # Rebuild the full participant dictionary for each entry from the UI
-        new_participants.append({
-            'name': p_data['name'],
-            'traits': p_data.get('traits', []),
-            'cards': [], # Start with no cards
-            'active_card': None,
-            'trait_display': get_traits_display(p_data.get('traits', [])),
-            'additional_cards': [],
-            'has_drawn': False # They haven't drawn cards for THIS encounter yet
-        })
-    
-    # CRITICAL: Overwrite the global list with the synchronized list from the UI
-    participants = new_participants
-
-    # 3. Reset deck and joker flag
-    deck = Deck()
-    joker_drawn = False
-    
-    broadcast_update()
-    return jsonify({'participants': serialize_participants(participants)})
+#@app.route('/new_encounter', methods=['POST'])
+#@gm_required
+#def new_encounter():
+#    global participants, deck, joker_drawn
+#    
+#    # 1. Get participant data from the client (UI)
+#    data = request.json
+#    participants_data = data.get('participants', [])
+#
+#    # 2. Re-initialize the global participants list based on the UI data
+#    new_participants = []
+#    for p_data in participants_data:
+#        # Rebuild the full participant dictionary for each entry from the UI
+#        new_participants.append({
+#            'name': p_data['name'],
+#            'traits': p_data.get('traits', []),
+#            'cards': [], # Start with no cards
+#            'active_card': None,
+#            'trait_display': get_traits_display(p_data.get('traits', [])),
+#            'additional_cards': [],
+#            'has_drawn': False # They haven't drawn cards for THIS encounter yet
+#        })
+#    
+#    # CRITICAL: Overwrite the global list with the synchronized list from the UI
+#    participants = new_participants
+#
+#    # 3. Reset deck and joker flag
+#    deck = Deck()
+#    joker_drawn = False
+#    
+#    broadcast_update()
+#    return jsonify({'participants': serialize_participants(participants)})
 
 # @app.route('/next_round', methods=['POST'])
 # @gm_required
