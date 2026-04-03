@@ -435,7 +435,7 @@ HTML_TEMPLATE = '''
                         if (!data.success) {
                             alert(data.error || "Failed to add participant.");
                         }
-                        // Server broadcast handles the UI redraw and focus restoration
+                        // SSE broadcast from the server handles all UI redraw — do nothing here.
                     });
                 }
         
@@ -536,10 +536,12 @@ HTML_TEMPLATE = '''
                             const serverParticipants = data.participants;
 
                             serverParticipants.forEach((p, index) => {
-                                // Find the row by checking if the input's current value matches the server's name
+                                // Find the row by its stable server index, not by the typed value.
+                                // Matching by value caused duplicates when the user hadn't yet typed
+                                // a name that matched the server placeholder.
                                 let row = currentRows.find(r => {
                                     const input = r.querySelector('input[type="text"]');
-                                    return input && input.value === p.name;
+                                    return input && parseInt(input.dataset.index) === index;
                                 });
 
                                 if (row) {
