@@ -81,6 +81,24 @@ class Deck:
             drawn.append(self.cards.pop())
         return drawn
     
+#def serialize_participants(participants):
+#    serialized = []
+#    for p in participants:
+#        serialized.append({
+#            'name': p['name'],
+#            'traits': p.get('traits', []),
+#            'trait_display': p.get('trait_display'),
+#            'has_drawn': p.get('has_drawn'),
+#            'cards': [c if isinstance(c, dict) else c.to_dict() for c in p.get('cards', [])],
+#            'additional_cards': [c if isinstance(c, dict) else c.to_dict() for c in p.get('additional_cards', [])],        
+#            'active_card': (
+#                p['active_card'] if isinstance(p.get('active_card'), dict)
+#                else p.get('active_card').to_dict() if p.get('active_card')
+#                else None
+#            )
+#        })
+#    return serialized
+
 def serialize_participants(participants):
     serialized = []
     for p in participants:
@@ -89,13 +107,9 @@ def serialize_participants(participants):
             'traits': p.get('traits', []),
             'trait_display': p.get('trait_display'),
             'has_drawn': p.get('has_drawn'),
-            'cards': [c if isinstance(c, dict) else c.to_dict() for c in p.get('cards', [])],
-            'additional_cards': [c if isinstance(c, dict) else c.to_dict() for c in p.get('additional_cards', [])],        
-            'active_card': (
-                p['active_card'] if isinstance(p.get('active_card'), dict)
-                else p.get('active_card').to_dict() if p.get('active_card')
-                else None
-            )
+            'cards': p.get('cards', []),
+            'additional_cards': p.get('additional_cards', []),        
+            'active_card': p.get('active_card')
         })
     return serialized
 
@@ -337,7 +351,7 @@ HTML_TEMPLATE = '''
         <div id="gmSection" class="gm-section hidden">
             <h3>GM Controls</h3>
             <div class="gm-controls">
-                <button onclick="newEncounter()">New Encounter</button>
+               <!-- <button onclick="newEncounter()">New Encounter</button> -->
                 <button onclick="nextRound()">Next Round</button>
                 <button onclick="resetDeck()">Reset Deck</button>
                 <button onclick="clearInitiative()">Clear Initiative</button>
@@ -768,7 +782,7 @@ HTML_TEMPLATE = '''
             return participants;
         }
         
-        function newEncounter() {
+        /* function newEncounter() {
             const participants = getParticipantsFromUI();
             if (participants.length === 0) {
                 alert('Please add participants first');
@@ -790,7 +804,7 @@ HTML_TEMPLATE = '''
                     if (isGM) renderParticipants();
                 }
             });
-        }
+        } */
         
         function resetDeck() {
             const participants = getParticipantsFromUI();
@@ -1058,32 +1072,32 @@ def update_participant_name():
 
     return jsonify({'error': 'Invalid participant index'}), 400
 
-@app.route('/add_participant_server', methods=['POST'])
-@gm_required
-def add_participant_server():
-    global participants
-    data = request.json
-    name = data.get('name', '').strip() or f"New Participant {len(participants) + 1}"
-
-    # Ensure unique names (or handle duplicates by appending a number)
-    original_name = name
-    counter = 1
-    while any(p['name'] == name for p in participants):
-        name = f"{original_name} {counter}"
-        counter += 1
-
-    new_participant = {
-        'name': name,
-        'traits': [],
-        'cards': [],
-        'active_card': None,
-        'trait_display': '',
-        'additional_cards': [],
-        'has_drawn': False # CRITICAL: Starts as not dealt in
-    }
-    participants.append(new_participant)
-    broadcast_update()
-    return jsonify({'success': True, 'participant': new_participant})
+# @app.route('/add_participant_server', methods=['POST'])
+# @gm_required
+# def add_participant_server():
+#    global participants
+#    data = request.json
+#    name = data.get('name', '').strip() or f"New Participant {len(participants) + 1}"
+#
+#    # Ensure unique names (or handle duplicates by appending a number)
+#    original_name = name
+#    counter = 1
+#    while any(p['name'] == name for p in participants):
+#        name = f"{original_name} {counter}"
+#        counter += 1
+#
+#    new_participant = {
+#        'name': name,
+#        'traits': [],
+#        'cards': [],
+#        'active_card': None,
+#        'trait_display': '',
+#        'additional_cards': [],
+#        'has_drawn': False # CRITICAL: Starts as not dealt in
+#    }
+#    participants.append(new_participant)
+#    broadcast_update()
+#    return jsonify({'success': True, 'participant': new_participant})
 
 @app.route('/update_traits', methods=['POST'])
 @gm_required
@@ -1114,80 +1128,106 @@ def update_participant_traits():
 
     return jsonify({'error': 'Invalid participant index'}), 400
 
-@app.route('/new_encounter', methods=['POST'])
-@gm_required
-def new_encounter():
-    global participants, deck, joker_drawn
-    
-    # 1. Get participant data from the client (UI)
-    data = request.json
-    participants_data = data.get('participants', [])
+#@app.route('/new_encounter', methods=['POST'])
+#@gm_required
+#def new_encounter():
+#    global participants, deck, joker_drawn
+#    
+#    # 1. Get participant data from the client (UI)
+#    data = request.json
+#    participants_data = data.get('participants', [])
+#
+#    # 2. Re-initialize the global participants list based on the UI data
+#    new_participants = []
+#    for p_data in participants_data:
+#        # Rebuild the full participant dictionary for each entry from the UI
+#        new_participants.append({
+#            'name': p_data['name'],
+#            'traits': p_data.get('traits', []),
+#            'cards': [], # Start with no cards
+#            'active_card': None,
+#            'trait_display': get_traits_display(p_data.get('traits', [])),
+#            'additional_cards': [],
+#            'has_drawn': False # They haven't drawn cards for THIS encounter yet
+#        })
+#    
+#    # CRITICAL: Overwrite the global list with the synchronized list from the UI
+#    participants = new_participants
+#
+#    # 3. Reset deck and joker flag
+#    deck = Deck()
+#    joker_drawn = False
+#    
+#    broadcast_update()
+#    return jsonify({'participants': serialize_participants(participants)})
 
-    # 2. Re-initialize the global participants list based on the UI data
-    new_participants = []
-    for p_data in participants_data:
-        # Rebuild the full participant dictionary for each entry from the UI
-        new_participants.append({
-            'name': p_data['name'],
-            'traits': p_data.get('traits', []),
-            'cards': [], # Start with no cards
-            'active_card': None,
-            'trait_display': get_traits_display(p_data.get('traits', [])),
-            'additional_cards': [],
-            'has_drawn': False # They haven't drawn cards for THIS encounter yet
-        })
-    
-    # CRITICAL: Overwrite the global list with the synchronized list from the UI
-    participants = new_participants
+# @app.route('/next_round', methods=['POST'])
+# @gm_required
+# def next_round():
+#     global participants, deck, joker_drawn
 
-    # 3. Reset deck and joker flag
-    deck = Deck()
-    joker_drawn = False
+#     # If a joker was drawn in the previous round, reset and reshuffle the deck
+#     if joker_drawn:
+#         deck = Deck()
+#         joker_drawn = False 
     
-    broadcast_update()
-    return jsonify({'participants': serialize_participants(participants)})
+#     new_joker_drawn = False
+    
+#     # Iterate over the GLOBAL 'participants' list
+#     for p in participants:
+#         # **CRITICAL CHECK:** Ensure the entry is a valid participant with a name
+#         if not p.get('name'):
+#             continue # Skip participants who are not named
+            
+#         # 1. Reset cards and status for the new round. 
+#         # By clearing p['cards'], we force a new draw for everyone.
+#         p['cards'] = []
+#         p['active_card'] = None
+#         p['additional_cards'] = [] 
+#         p['has_drawn'] = True # Everyone is now dealt in for this round
+        
+#         # 2. Draw the initial card(s) and determine the active card
+#         # This function handles the drawing logic based on Level Headed/Hesitant/Quick
+#         cards_drawn = draw_for_participant(p['traits'])
+
+#         # 3. Check for Joker draw and set the temporary flag
+#         if any(c['rank'] == 'Joker' for c in cards_drawn):
+#             new_joker_drawn = True
+
+#         # 4. Store the drawn cards and determine the active card
+#         p['cards'] = cards_drawn
+#         # Note: determine_active_card internally calls get_active_from_initial
+#         p['active_card'] = determine_active_card(p['cards'], p['traits'], p['additional_cards'])
 
 @app.route('/next_round', methods=['POST'])
 @gm_required
 def next_round():
     global participants, deck, joker_drawn
 
-    # If a joker was drawn in the previous round, reset and reshuffle the deck
     if joker_drawn:
         deck = Deck()
         joker_drawn = False 
     
-    new_joker_drawn = False
-    
-    # Iterate over the GLOBAL 'participants' list
     for p in participants:
-        # **CRITICAL CHECK:** Ensure the entry is a valid participant with a name
         if not p.get('name'):
-            continue # Skip participants who are not named
+            continue
             
-        # 1. Reset cards and status for the new round. 
-        # By clearing p['cards'], we force a new draw for everyone.
         p['cards'] = []
         p['active_card'] = None
         p['additional_cards'] = [] 
-        p['has_drawn'] = True # Everyone is now dealt in for this round
+        p['has_drawn'] = True 
         
-        # 2. Draw the initial card(s) and determine the active card
-        # This function handles the drawing logic based on Level Headed/Hesitant/Quick
         cards_drawn = draw_for_participant(p['traits'])
 
-        # 3. Check for Joker draw and set the temporary flag
         if any(c['rank'] == 'Joker' for c in cards_drawn):
-            new_joker_drawn = True
+            joker_drawn = True # Directly update the global flag
 
-        # 4. Store the drawn cards and determine the active card
         p['cards'] = cards_drawn
-        # Note: determine_active_card internally calls get_active_from_initial
         p['active_card'] = determine_active_card(p['cards'], p['traits'], p['additional_cards'])
 
 
     # Update the global joker flag
-    joker_drawn = new_joker_drawn
+#    joker_drawn = new_joker_drawn
     
     # Sort participants for the new initiative order
     participants.sort(key=lambda p: (
@@ -1266,13 +1306,18 @@ def draw_additional():
             participants[index]['additional_cards'].append(card_dict)
             
             # For additional cards, if it's higher than current active, use it
-            current_active = participants[index].get('active_card')
-            if current_active:
-                if (card_dict['value'], card_dict['suit_value']) > \
-                   (current_active['value'], current_active['suit_value']):
-                    participants[index]['active_card'] = card_dict
-            else:
-                participants[index]['active_card'] = card_dict
+#            current_active = participants[index].get('active_card')
+#            
+#            if current_active:
+#                if (card_dict['value'], card_dict['suit_value']) > \
+#                   (current_active['value'], current_active['suit_value']):
+#                    participants[index]['active_card'] = card_dict
+#            else:
+#                participants[index]['active_card'] = card_dict
+
+            # Recalculate active card using the standard logic helper
+            p = participants[index]
+            p['active_card'] = determine_active_card(p['cards'], p['traits'], p['additional_cards'])
 
             # Mark participant as having drawn
             participants[index]['has_drawn'] = True
@@ -1286,15 +1331,15 @@ def draw_additional():
     broadcast_update()
     return jsonify({'participants': serialize_participants(participants)})
 
-@app.route('/reset', methods=['POST'])
-@gm_required
-def reset():
-    global deck, participants, joker_drawn
-    deck = Deck()
-    participants = []
-    joker_drawn = False
-    broadcast_update()
-    return jsonify({'participants': []})
+#@app.route('/reset', methods=['POST'])
+#@gm_required
+#def reset():
+#    global deck, participants, joker_drawn
+#    deck = Deck()
+#   participants = []
+#    joker_drawn = False
+#    broadcast_update()
+#    return jsonify({'participants': []})
 
 @app.route('/deal_in', methods=['POST'])
 @gm_required
