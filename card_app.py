@@ -435,7 +435,7 @@ HTML_TEMPLATE = '''
                         if (!data.success) {
                             alert(data.error || "Failed to add participant.");
                         }
-                        // SSE broadcast from the server handles all UI redraw — do nothing here.
+                        // Server broadcast handles the UI redraw and focus restoration
                     });
                 }
         
@@ -512,7 +512,7 @@ HTML_TEMPLATE = '''
                     }
                 }
         
-        function renderParticipants() {
+        function renderParticipants(serverParticipants) {
                     if (!isGM) return;
                 
                     const list = document.getElementById('participantList');
@@ -530,10 +530,10 @@ HTML_TEMPLATE = '''
                     }
                     // ------------------------------------------------
 
-                    fetch('/get_participants')
-                        .then(response => response.json())
-                        .then(data => {
-                            const serverParticipants = data.participants;
+                    // Use data passed in directly (e.g. from SSE) to avoid a redundant
+                    // fetch('/get_participants') that races with concurrent SSE events and
+                    // causes duplicate rows. All callers must supply the participant list.
+                    const doRender = (serverParticipants) => {
 
                             serverParticipants.forEach((p, index) => {
                                 // Find the row by its stable server index, not by the typed value.
@@ -651,11 +651,19 @@ HTML_TEMPLATE = '''
                                     const input = lastRow.querySelector('input[type="text"]');
                                     if (input) {
                                         input.focus();
-                                        input.select(); // 🌟 NEW QoL FEATURE: Selects the default text
+                                        input.select(); // NEW QoL FEATURE: Selects the default text
                                     }
                                 }
                             }
-                        });
+                    };
+
+                    if (serverParticipants) {
+                        doRender(serverParticipants);
+                    } else {
+                        fetch('/get_participants')
+                            .then(response => response.json())
+                            .then(data => doRender(data.participants));
+                    }
                 }
 
         function updateParticipantName(inputElement) {
@@ -949,7 +957,7 @@ HTML_TEMPLATE = '''
                     deckCountElem.textContent = data.deck_remaining;
                 }
                 if (isGM && document.getElementById('participantList')) {
-                    renderParticipants();
+                    renderParticipants(data.participants);
                 }
             };
 
