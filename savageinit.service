@@ -1,7 +1,12 @@
 # savageinit.service
 #
-# Copy this into "/etc/systemd/system/".
-# Then run the following commands to activate it:
+# First, modify the configuration, below, with
+# a non-root username and the locations of 
+# Python3 and card_app.py.
+#
+# Then, copy savageinit.service into "/etc/systemd/system/".
+# 
+# Next, run the following commands to activate it:
 # sudo systemctl daemon-reload
 # sudo systemctl enable --now savageinit.service
 #
