@@ -91,7 +91,9 @@ def serialize_participants(participants):
             'has_drawn': p.get('has_drawn'),
             'cards': p.get('cards', []),
             'additional_cards': p.get('additional_cards', []),        
-            'active_card': p.get('active_card')
+            'active_card': p.get('active_card'),
+            'on_hold': p.get('on_hold', False),
+            'held_joker': p.get('held_joker', False)
         })
     return serialized
 
@@ -303,6 +305,19 @@ HTML_TEMPLATE = '''
         }
         .hidden {
             display: none;
+        }
+        .hold-button.active {
+            background-color: #000;
+            color: #fff;
+        }
+        .hold-card {
+            border: 2px dashed #999;
+            padding: 8px 20px;
+            min-width: 60px;
+            text-align: center;
+            background-color: #f0f0f0;
+            color: #555;
+            font-style: italic;
         }
         .viewer-note {
             text-align: center;
@@ -561,10 +576,14 @@ HTML_TEMPLATE = '''
                                 `;
 
                                 // Show Deal In button only if participant hasn't drawn any cards
-                                const shouldShowDealIn = !p.has_drawn;
+                                const shouldShowDealIn = !p.has_drawn && !p.on_hold;
                                 const dealInButtonHTML = shouldShowDealIn
                                     ? `<button class="deal-in-button" onclick="dealIn(${index})">Deal In</button>`
                                     : '';
+
+                                // Show Hold button only if participant has drawn cards this round
+                                // (on_hold itself counts since they were drawn before hold was set)
+                                const shouldShowHold = p.has_drawn || p.on_hold;
                                     
                                 let nameValue = p.name;
                                 
@@ -582,39 +601,51 @@ HTML_TEMPLATE = '''
                                     row.innerHTML = `
                                         <input type="text" value="${nameValue}" data-index="${index}" onblur="updateParticipantName(this)">
                                         <div class="trait-buttons">${traitButtonsHTML}</div>
-                                        <button onclick="removeParticipant(this)">Remove</button>
-                                        ${dealInButtonHTML}
+                                        <div class="row-buttons" style="display:flex;gap:5px;">
+                                            ${shouldShowHold ? `<button class="hold-button ${p.on_hold ? 'active' : ''}" onclick="toggleHold(${index})">Hold</button>` : ''}
+                                            <button class="remove-button" onclick="removeParticipant(${index})">Remove</button>
+                                            ${dealInButtonHTML}
+                                        </div>
                                     `;
                                     list.appendChild(row);
                                 } else {
-                                    // Participant row exists → update traits, index, and Deal In button
+                                    // Participant row exists — update in place.
+                                    // Protect the text input's focus/value; rebuild all buttons fresh.
                                     const nameInput = row.querySelector('input[type="text"]');
-                                    nameInput.dataset.index = index; // Critical to update the server index!
-                                    nameInput.onblur = () => updateParticipantName(nameInput); // Re-apply handler
-
-                                    // Only overwrite the value if the input is NOT currently focused AND it's not the one we just restored
+                                    nameInput.dataset.index = index;
+                                    nameInput.onblur = () => updateParticipantName(nameInput);
                                     if (activeElement !== nameInput) {
                                         nameInput.value = nameValue;
                                     }
-                                    
+
                                     const traitContainer = row.querySelector('.trait-buttons');
                                     traitContainer.innerHTML = traitButtonsHTML;
 
-                                    // Handle Deal In button visibility and click handler
-                                    let dealInButton = row.querySelector('.deal-in-button');
-                                    if (shouldShowDealIn) {
-                                        if (!dealInButton) {
-                                            dealInButton = document.createElement('button');
-                                            dealInButton.className = 'deal-in-button';
-                                            dealInButton.textContent = 'Deal In';
-                                            row.appendChild(dealInButton);
-                                        }
-                                        dealInButton.onclick = () => dealIn(index); 
-                                        dealInButton.style.display = 'inline-block';
-                                    } else if (dealInButton) {
-                                        dealInButton.style.display = 'none';
+                                    // Rebuild button area from scratch so order and visibility
+                                    // are always correct with no stale display:none state.
+                                    let buttonContainer = row.querySelector('.row-buttons');
+                                    if (!buttonContainer) {
+                                        buttonContainer = document.createElement('div');
+                                        buttonContainer.className = 'row-buttons';
+                                        buttonContainer.style.display = 'flex';
+                                        buttonContainer.style.gap = '5px';
+                                        row.appendChild(buttonContainer);
                                     }
-                                    
+                                    buttonContainer.innerHTML =
+                                        (shouldShowHold
+                                            ? `<button class="hold-button ${p.on_hold ? 'active' : ''}">Hold</button>`
+                                            : '') +
+                                        `<button class="remove-button">Remove</button>` +
+                                        (shouldShowDealIn
+                                            ? `<button class="deal-in-button">Deal In</button>`
+                                            : '');
+
+                                    const holdBtn = buttonContainer.querySelector('.hold-button');
+                                    if (holdBtn) holdBtn.onclick = () => toggleHold(index);
+                                    buttonContainer.querySelector('.remove-button').onclick = () => removeParticipant(index);
+                                    const dealInBtn = buttonContainer.querySelector('.deal-in-button');
+                                    if (dealInBtn) dealInBtn.onclick = () => dealIn(index);
+
                                     // Ensure the row is placed in the correct order in the DOM
                                     if (list.children[index] !== row) {
                                         list.insertBefore(row, list.children[index]);
@@ -684,12 +715,7 @@ HTML_TEMPLATE = '''
             });
         }
 
-        function removeParticipant(button) {
-                    const row = button.parentElement;
-                    // Get index from the input's data attribute, not DOM position
-                    const index = parseInt(row.querySelector('input[type="text"]').dataset.index);
-
-                    // Remove from server
+        function removeParticipant(index) {
                     fetch('/remove_participant', {
                         method: 'POST',
                         headers: {'Content-Type': 'application/json'},
@@ -697,9 +723,18 @@ HTML_TEMPLATE = '''
                     })
                     .then(response => response.json())
                     .then(data => {
-                        // Now rely on SSE to remove the row
+                        // SSE broadcast handles removal from all views
                     });
                 }
+
+        function toggleHold(index) {
+            fetch('/toggle_hold', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({index})
+            });
+            // SSE broadcast handles the redraw
+        }
 
         function dealIn(index) {
                     // Find the row using the *current* position in the UI list
@@ -867,7 +902,8 @@ HTML_TEMPLATE = '''
             const orderDiv = document.getElementById('initiativeOrder');
             let participantsToShow = data.participants;
             if (!isGM) {
-                participantsToShow = participantsToShow.filter(p => p.cards && p.cards.length > 0);
+                // Players see: participants with cards drawn OR participants on hold
+                participantsToShow = participantsToShow.filter(p => (p.cards && p.cards.length > 0) || p.on_hold);
             }
 
             if (participantsToShow.length === 0) {
@@ -891,19 +927,27 @@ HTML_TEMPLATE = '''
                         </div>
                     `;
 
-                    // Cards
-                    const cardsHTML = p.cards.map(card => {
-                        const suitClass = card.rank === 'Joker' ? 'joker' : card.suit.toLowerCase();
-                        const activeClass = card === p.active_card ? 'active' : '';
-                        return `<div class="card ${suitClass} ${activeClass}">${card.display}</div>`;
-                    }).join('');
-                    const cardsContainerHTML = `<div class="cards" style="display:flex; gap:5px; flex-wrap:wrap;">${cardsHTML}</div>`;
+                    // Cards — show Hold card (and joker if applicable) if on hold, otherwise normal cards
+                    let cardsContainerHTML;
+                    if (p.on_hold) {
+                        const jokerHTML = p.held_joker
+                            ? `<div class="card joker">Joker</div>`
+                            : '';
+                        cardsContainerHTML = `<div class="cards" style="display:flex; gap:5px; flex-wrap:wrap;"><div class="hold-card">Hold</div>${jokerHTML}</div>`;
+                    } else {
+                        const cardsHTML = p.cards.map(card => {
+                            const suitClass = card.rank === 'Joker' ? 'joker' : card.suit.toLowerCase();
+                            const activeClass = card === p.active_card ? 'active' : '';
+                            return `<div class="card ${suitClass} ${activeClass}">${card.display}</div>`;
+                        }).join('');
+                        cardsContainerHTML = `<div class="cards" style="display:flex; gap:5px; flex-wrap:wrap;">${cardsHTML}</div>`;
+                    }
 
                     // Trait display
                     const traitText = p.trait_display ? `<div class="edge-hindrance">${p.trait_display}</div>` : '';
 
-                    // GM-only button
-                    const drawButtonHTML = (isGM && p.cards && p.cards.length > 0)
+                    // GM-only button — suppress Draw Additional for held participants
+                    const drawButtonHTML = (isGM && !p.on_hold && p.cards && p.cards.length > 0)
                     ? `<button style="margin-left:auto" onclick="drawAdditional(${index})">Draw Additional</button>`
                     : '';
 
@@ -1066,10 +1110,14 @@ def update_participant_traits():
             participants[index]['active_card'] = determine_active_card(cards, new_traits, additional_cards)
             
             # Re-sort the initiative list if traits were changed while initiative is active
-            participants.sort(key=lambda p: (
-                p['active_card']['value'] if p.get('active_card') else -1,
-                p['active_card']['suit_value'] if p.get('active_card') else -1
-            ), reverse=True)
+            def initiative_sort_key(p):
+                if p.get('on_hold'):
+                    return (1, 0, 0)
+                if p.get('active_card'):
+                    return (0, -p['active_card']['value'], -p['active_card']['suit_value'])
+                return (2, 0, 0)
+
+            participants.sort(key=initiative_sort_key)
         
         broadcast_update()
         return jsonify({'success': True})
@@ -1088,6 +1136,10 @@ def next_round():
     for p in participants:
         if not p.get('name'):
             continue
+
+        if p.get('on_hold'):
+            p['held_joker'] = False
+            continue
             
         p['cards'] = []
         p['active_card'] = None
@@ -1104,11 +1156,15 @@ def next_round():
 
 
     # Update the global joker flag  
-    # Sort participants for the new initiative order
-    participants.sort(key=lambda p: (
-        p['active_card']['value'] if p.get('active_card') else -1,
-        p['active_card']['suit_value'] if p.get('active_card') else -1
-    ), reverse=True)
+    # Sort participants: drawn cards first (by card value), then on-hold, then undrawn
+    def next_round_sort_key(p):
+        if p.get('on_hold'):
+            return (1, 0, 0)
+        if p.get('active_card'):
+            return (0, -p['active_card']['value'], -p['active_card']['suit_value'])
+        return (2, 0, 0)
+
+    participants.sort(key=next_round_sort_key)
     
     broadcast_update()
     return jsonify({'participants': serialize_participants(participants)})
@@ -1132,6 +1188,8 @@ def reset_deck():
         p['active_card'] = None
         p['additional_cards'] = []
         p['has_drawn'] = False
+        p['held_joker'] = False
+        p['on_hold'] = False
 
     
     broadcast_update()
@@ -1166,6 +1224,8 @@ def draw_additional():
     index = data.get('index')
     
     if 0 <= index < len(participants):
+        if participants[index].get('on_hold'):
+            return jsonify({'error': 'Participant is on Hold'}), 400
         additional_card = deck.draw(1)
         if additional_card:
             card_dict = additional_card[0].to_dict()
@@ -1188,11 +1248,15 @@ def draw_additional():
             # Mark participant as having drawn
             participants[index]['has_drawn'] = True
     
-    # Re-sort by active card
-    participants.sort(key=lambda p: (
-        p['active_card']['value'] if p['active_card'] else -1,
-        p['active_card']['suit_value'] if p['active_card'] else -1
-    ), reverse=True)
+    # Re-sort: drawn cards first (by card value desc), then on-hold, then undrawn
+    def initiative_sort_key(p):
+        if p.get('on_hold'):
+            return (1, 0, 0)
+        if p.get('active_card'):
+            return (0, -p['active_card']['value'], -p['active_card']['suit_value'])
+        return (2, 0, 0)
+
+    participants.sort(key=initiative_sort_key)
     
     broadcast_update()
     return jsonify({'participants': serialize_participants(participants)})
@@ -1215,6 +1279,9 @@ def deal_in():
         if existing.get('has_drawn'):
             return jsonify({'error': 'Participant already dealt in'}), 400
         
+        if existing.get('on_hold'):
+            return jsonify({'error': 'Participant is on Hold'}), 400
+        
         # Update traits and draw cards
         existing['traits'] = traits
         existing['trait_display'] = get_traits_display(traits)
@@ -1236,7 +1303,8 @@ def deal_in():
             'active_card': determine_active_card(cards, traits, []),
             'trait_display': get_traits_display(traits),
             'additional_cards': [],
-            'has_drawn': True
+            'has_drawn': True,
+            'on_hold': False
         }
 
         if any(card['rank'] == 'Joker' for card in cards):
@@ -1244,11 +1312,15 @@ def deal_in():
 
         participants.append(participant)
 
-    # Sort initiative by active card, keep all participants intact
-    participants.sort(key=lambda p: (
-        p['active_card']['value'] if p.get('active_card') else -1,
-        p['active_card']['suit_value'] if p.get('active_card') else -1
-    ), reverse=True)
+    # Sort: drawn cards first (by card value desc), then on-hold, then undrawn
+    def initiative_sort_key(p):
+        if p.get('on_hold'):
+            return (1, 0, 0)
+        if p.get('active_card'):
+            return (0, -p['active_card']['value'], -p['active_card']['suit_value'])
+        return (2, 0, 0)
+
+    participants.sort(key=initiative_sort_key)
 
     broadcast_update()
     return jsonify({'participants': serialize_participants(participants)})
@@ -1357,6 +1429,50 @@ def get_traits_display(traits):
     }
     return ', '.join([trait_names.get(t, t) for t in traits]) if traits else ''
 
+@app.route('/toggle_hold', methods=['POST'])
+@gm_required
+def toggle_hold():
+    global participants
+    data = request.json
+    index = data.get('index')
+
+    if not (0 <= index < len(participants)):
+        return jsonify({'error': 'Invalid participant index'}), 400
+
+    p = participants[index]
+
+    # Participants must have drawn cards before they can go on hold
+    if not p.get('on_hold') and not p.get('has_drawn'):
+        return jsonify({'error': 'Participant has not drawn cards yet'}), 400
+
+    p['on_hold'] = not p.get('on_hold', False)
+
+    if p['on_hold']:
+        # Toggling ON: check if any drawn card was a joker and remember it
+        p['held_joker'] = any(c.get('rank') == 'Joker' for c in p.get('cards', []))
+    else:
+        # Toggling OFF: clear joker memory along with all card state
+        p['held_joker'] = False
+
+    # Whether toggling on or off, clear all card state so they
+    # re-enter initiative cleanly once hold is released.
+    p['cards'] = []
+    p['active_card'] = None
+    p['additional_cards'] = []
+    p['has_drawn'] = False
+
+    # Sort: drawn first (by value desc), then on-hold, then undrawn
+    def initiative_sort_key(p):
+        if p.get('on_hold'):
+            return (1, 0, 0)
+        if p.get('active_card'):
+            return (0, -p['active_card']['value'], -p['active_card']['suit_value'])
+        return (2, 0, 0)
+
+    participants.sort(key=initiative_sort_key)
+    broadcast_update()
+    return jsonify({'participants': serialize_participants(participants)})
+
 @app.route('/add_participant_placeholder', methods=['POST'])
 @gm_required
 def add_participant_placeholder():
@@ -1381,7 +1497,8 @@ def add_participant_placeholder():
         'active_card': None,
         'trait_display': '',
         'additional_cards': [],
-        'has_drawn': False
+        'has_drawn': False,
+        'on_hold': False
     }
     participants.append(new_participant)
     broadcast_update()
