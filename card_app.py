@@ -93,7 +93,8 @@ def serialize_participants(participants):
             'additional_cards': p.get('additional_cards', []),        
             'active_card': p.get('active_card'),
             'on_hold': p.get('on_hold', False),
-            'held_joker': p.get('held_joker', False)
+            'held_joker': p.get('held_joker', False),
+            'is_hidden': p.get('is_hidden', False)
         })
     return serialized
 
@@ -303,10 +304,21 @@ HTML_TEMPLATE = '''
             margin-bottom: 10px;
             border: 1px solid #000;
         }
+        .gm-error {
+            margin-top: 10px;
+            padding: 10px;
+            border: 2px solid #000;
+            background-color: #fff;
+            font-weight: bold;
+        }
         .hidden {
             display: none;
         }
         .hold-button.active {
+            background-color: #000;
+            color: #fff;
+        }
+        .hidden-button.active {
             background-color: #000;
             color: #fff;
         }
@@ -355,6 +367,7 @@ HTML_TEMPLATE = '''
                 <button onclick="logout()">Logout</button>
             </div>
             <div style="margin-top: 10px;">Cards remaining: <span id="deckCount">54</span></div>
+            <div id="gmError" class="gm-error hidden"></div>
         </div>
         
         <div id="participantSection" class="participant-setup hidden">
@@ -371,6 +384,29 @@ HTML_TEMPLATE = '''
     
     <script>
         let isGM = false;
+
+        function showGmError(message) {
+            const el = document.getElementById('gmError');
+            if (el) {
+                el.textContent = message;
+                el.classList.remove('hidden');
+            }
+        }
+
+        function clearGmError() {
+            const el = document.getElementById('gmError');
+            if (el) {
+                el.classList.add('hidden');
+                el.textContent = '';
+            }
+        }
+
+        // Dismiss the error message on any button click
+        document.addEventListener('click', function(e) {
+            if (e.target.tagName === 'BUTTON') {
+                clearGmError();
+            }
+        });
         
         function checkAuth() {
             return fetch('/check_auth')
@@ -603,6 +639,7 @@ HTML_TEMPLATE = '''
                                         <div class="trait-buttons">${traitButtonsHTML}</div>
                                         <div class="row-buttons" style="display:flex;gap:5px;">
                                             ${shouldShowHold ? `<button class="hold-button ${p.on_hold ? 'active' : ''}" onclick="toggleHold(${index})">Hold</button>` : ''}
+                                            <button class="hidden-button ${p.is_hidden ? 'active' : ''}" onclick="toggleHidden(${index})">Hidden</button>
                                             <button class="remove-button" onclick="removeParticipant(${index})">Remove</button>
                                             ${dealInButtonHTML}
                                         </div>
@@ -635,6 +672,7 @@ HTML_TEMPLATE = '''
                                         (shouldShowHold
                                             ? `<button class="hold-button ${p.on_hold ? 'active' : ''}">Hold</button>`
                                             : '') +
+                                        `<button class="hidden-button ${p.is_hidden ? 'active' : ''}">Hidden</button>` +
                                         `<button class="remove-button">Remove</button>` +
                                         (shouldShowDealIn
                                             ? `<button class="deal-in-button">Deal In</button>`
@@ -642,6 +680,7 @@ HTML_TEMPLATE = '''
 
                                     const holdBtn = buttonContainer.querySelector('.hold-button');
                                     if (holdBtn) holdBtn.onclick = () => toggleHold(index);
+                                    buttonContainer.querySelector('.hidden-button').onclick = () => toggleHidden(index);
                                     buttonContainer.querySelector('.remove-button').onclick = () => removeParticipant(index);
                                     const dealInBtn = buttonContainer.querySelector('.deal-in-button');
                                     if (dealInBtn) dealInBtn.onclick = () => dealIn(index);
@@ -736,6 +775,15 @@ HTML_TEMPLATE = '''
             // SSE broadcast handles the redraw
         }
 
+        function toggleHidden(index) {
+            fetch('/toggle_hidden', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({index})
+            });
+            // SSE broadcast handles the redraw
+        }
+
         function dealIn(index) {
                     // Find the row using the *current* position in the UI list
                     const row = document.querySelectorAll('.participant-row')[index];
@@ -765,7 +813,7 @@ HTML_TEMPLATE = '''
                     .then(response => response.json())
                     .then(data => {
                         if (data.error) {
-                            alert(data.error);
+                            showGmError(data.error);
                         } else {
                             // CRITICAL FIX: After a successful deal-in, the server has updated
                             // the global list and broadcast the result. The participant is
@@ -814,7 +862,7 @@ HTML_TEMPLATE = '''
             .then(response => response.json())
             .then(data => {
                 if (data.error) {
-                    alert(data.error);
+                    showGmError(data.error);
                 } else {
                     displayInitiative(data);
                     updateDeckCount();
@@ -859,7 +907,7 @@ HTML_TEMPLATE = '''
             .then(response => response.json())
             .then(data => {
                 if (data.error) {
-                    alert(data.error);
+                    showGmError(data.error);
                 } else {
                     displayInitiative(data);
                     updateDeckCount();
@@ -880,7 +928,7 @@ HTML_TEMPLATE = '''
             .then(response => response.json())
             .then(data => {
                 if (data.error) {
-                    alert(data.error);
+                    showGmError(data.error);
                 } else {
                     displayInitiative(data);
                     updateDeckCount();
@@ -903,7 +951,7 @@ HTML_TEMPLATE = '''
             let participantsToShow = data.participants;
             if (!isGM) {
                 // Players see: participants with cards drawn OR participants on hold
-                participantsToShow = participantsToShow.filter(p => (p.cards && p.cards.length > 0) || p.on_hold);
+                participantsToShow = participantsToShow.filter(p => !p.is_hidden && ((p.cards && p.cards.length > 0) || p.on_hold));
             }
 
             if (participantsToShow.length === 0) {
@@ -1133,6 +1181,16 @@ def next_round():
         deck = Deck()
         joker_drawn = False 
     
+    # Pre-flight: verify we can draw for all non-held participants before
+    # clearing any existing cards. This prevents partial state on error.
+    total_needed = sum(
+        cards_needed_for_traits(p['traits'])
+        for p in participants
+        if p.get('name') and not p.get('on_hold')
+    )
+    if not replenish_deck_if_needed(total_needed):
+        return jsonify({'error': 'Not enough cards available. Too many cards are currently active.'}), 400
+
     for p in participants:
         if not p.get('name'):
             continue
@@ -1143,16 +1201,21 @@ def next_round():
             
         p['cards'] = []
         p['active_card'] = None
-        p['additional_cards'] = [] 
-        p['has_drawn'] = True 
-        
+        p['additional_cards'] = []
+
         cards_drawn = draw_for_participant(p['traits'])
 
-        if any(c['rank'] == 'Joker' for c in cards_drawn):
-            joker_drawn = True # Directly update the global flag
+        if cards_drawn is None:
+            # Should not happen after a successful pre-flight, but guard anyway
+            broadcast_update()
+            return jsonify({'error': 'Not enough cards available. Too many cards are currently active.'}), 400
 
-        p['cards'] = cards_drawn
-        p['active_card'] = determine_active_card(p['cards'], p['traits'], p['additional_cards'])
+        if cards_drawn:
+            p['has_drawn'] = True
+            if any(c['rank'] == 'Joker' for c in cards_drawn):
+                joker_drawn = True
+            p['cards'] = cards_drawn
+            p['active_card'] = determine_active_card(p['cards'], p['traits'], p['additional_cards'])
 
 
     # Update the global joker flag  
@@ -1226,27 +1289,29 @@ def draw_additional():
     if 0 <= index < len(participants):
         if participants[index].get('on_hold'):
             return jsonify({'error': 'Participant is on Hold'}), 400
+        if count_active_cards() >= 54:
+            return jsonify({'error': 'Not enough cards available. Too many cards are currently active.'}), 400
         additional_card = deck.draw(1)
-        if additional_card:
-            card_dict = additional_card[0].to_dict()
-            participants[index]['cards'].append(card_dict)
-            
-            # Check for joker
-            if card_dict['rank'] == 'Joker':
-                joker_drawn = True
-            
-            # Track this as an additional card
-            if 'additional_cards' not in participants[index]:
-                participants[index]['additional_cards'] = []
-            participants[index]['additional_cards'].append(card_dict)
-            
-            # For additional cards, if it's higher than current active, use it
-            # Recalculate active card using the standard logic helper
-            p = participants[index]
-            p['active_card'] = determine_active_card(p['cards'], p['traits'], p['additional_cards'])
+        if not additional_card:
+            return jsonify({'error': 'Not enough cards available. Too many cards are currently active.'}), 400
+        card_dict = additional_card[0].to_dict()
+        participants[index]['cards'].append(card_dict)
+        
+        # Check for joker
+        if card_dict['rank'] == 'Joker':
+            joker_drawn = True
+        
+        # Track this as an additional card
+        if 'additional_cards' not in participants[index]:
+            participants[index]['additional_cards'] = []
+        participants[index]['additional_cards'].append(card_dict)
+        
+        # Recalculate active card using the standard logic helper
+        p = participants[index]
+        p['active_card'] = determine_active_card(p['cards'], p['traits'], p['additional_cards'])
 
-            # Mark participant as having drawn
-            participants[index]['has_drawn'] = True
+        # Mark participant as having drawn
+        participants[index]['has_drawn'] = True
     
     # Re-sort: drawn cards first (by card value desc), then on-hold, then undrawn
     def initiative_sort_key(p):
@@ -1286,6 +1351,8 @@ def deal_in():
         existing['traits'] = traits
         existing['trait_display'] = get_traits_display(traits)
         cards = draw_for_participant(traits)
+        if cards is None:
+            return jsonify({'error': 'Not enough cards available. Too many cards are currently active.'}), 400
         existing['cards'] = cards
         existing['active_card'] = determine_active_card(cards, traits, [])
         existing['has_drawn'] = True
@@ -1296,6 +1363,8 @@ def deal_in():
     else:
         # New participant
         cards = draw_for_participant(traits)
+        if cards is None:
+            return jsonify({'error': 'Not enough cards available. Too many cards are currently active.'}), 400
         participant = {
             'name': name,
             'traits': traits,
@@ -1304,7 +1373,8 @@ def deal_in():
             'trait_display': get_traits_display(traits),
             'additional_cards': [],
             'has_drawn': True,
-            'on_hold': False
+            'on_hold': False,
+            'is_hidden': False
         }
 
         if any(card['rank'] == 'Joker' for card in cards):
@@ -1336,10 +1406,64 @@ def get_initiative():
 def deck_info():
     return jsonify({'remaining': len(deck.cards)})
 
+def count_active_cards():
+    """Count all cards currently assigned to participants."""
+    total = 0
+    for p in participants:
+        total += len(p.get('cards', []))
+    return total
+
+def replenish_deck_if_needed(cards_needed):
+    """If the deck has fewer cards than needed, silently reshuffle all
+    unassigned cards back in. Returns False if even after replenishing
+    there are not enough cards (i.e. too many active cards)."""
+    if len(deck.cards) >= cards_needed:
+        return True
+    # Count cards currently held by participants
+    active = count_active_cards()
+    total_available = 54 - active
+    if total_available < cards_needed:
+        return False
+    # Rebuild deck from scratch and remove active cards
+    active_cards = []
+    for p in participants:
+        active_cards.extend(p.get('cards', []))
+    new_deck = Deck()  # creates and shuffles a full 54-card deck
+    # Remove active non-Joker cards by rank+suit match
+    # Remove active Jokers by count (both are identical: rank='Joker', suit='')
+    jokers_to_remove = sum(1 for ac in active_cards if ac['rank'] == 'Joker')
+    for ac in active_cards:
+        if ac['rank'] == 'Joker':
+            continue  # handled separately below
+        for i, c in enumerate(new_deck.cards):
+            if c.rank == ac['rank'] and c.suit == ac['suit']:
+                new_deck.cards.pop(i)
+                break
+    removed = 0
+    i = 0
+    while i < len(new_deck.cards) and removed < jokers_to_remove:
+        if new_deck.cards[i].rank == 'Joker':
+            new_deck.cards.pop(i)
+            removed += 1
+        else:
+            i += 1
+    deck.cards = new_deck.cards
+    return True
+
+def cards_needed_for_traits(traits):
+    """Return the base number of cards a participant is entitled to
+    given their traits. Does not account for Quick's conditional redraw."""
+    if 'improved_level_headed' in traits:
+        return 3
+    elif 'level_headed' in traits or 'hesitant' in traits:
+        return 2
+    return 1
+
 def draw_for_participant(traits):
-    """Draw cards based on traits"""
+    """Draw cards based on traits. Returns None if the deck cannot be
+    replenished enough to fulfil the draw (too many active cards)."""
     num_cards = 1
-    
+
     # Determine base number of cards to draw
     if 'improved_level_headed' in traits:
         num_cards = 3
@@ -1347,17 +1471,22 @@ def draw_for_participant(traits):
         num_cards = 2
     elif 'hesitant' in traits:
         num_cards = 2
-    
+
+    if not replenish_deck_if_needed(num_cards):
+        return None
+
     cards = deck.draw(num_cards)
-    
+
     # Handle Quick trait
     if 'quick' in traits and cards:
         first_card = cards[0]
         if first_card.value() <= 5 and first_card.rank != 'Joker':
+            if not replenish_deck_if_needed(1):
+                return None
             additional = deck.draw(1)
             if additional:
                 cards.extend(additional)
-    
+
     return [card.to_dict() for card in cards]
 
 def determine_active_card(cards, traits, additional_cards):
@@ -1429,6 +1558,21 @@ def get_traits_display(traits):
     }
     return ', '.join([trait_names.get(t, t) for t in traits]) if traits else ''
 
+@app.route('/toggle_hidden', methods=['POST'])
+@gm_required
+def toggle_hidden():
+    global participants
+    data = request.json
+    index = data.get('index')
+
+    if not (0 <= index < len(participants)):
+        return jsonify({'error': 'Invalid participant index'}), 400
+
+    p = participants[index]
+    p['is_hidden'] = not p.get('is_hidden', False)
+    broadcast_update()
+    return jsonify({'participants': serialize_participants(participants)})
+
 @app.route('/toggle_hold', methods=['POST'])
 @gm_required
 def toggle_hold():
@@ -1498,7 +1642,8 @@ def add_participant_placeholder():
         'trait_display': '',
         'additional_cards': [],
         'has_drawn': False,
-        'on_hold': False
+        'on_hold': False,
+        'is_hidden': False
     }
     participants.append(new_participant)
     broadcast_update()
