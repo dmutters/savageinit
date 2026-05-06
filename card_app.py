@@ -382,6 +382,11 @@ HTML_TEMPLATE = '''
         </div>
     </div>
     
+    <footer style="text-align:center; margin-top:40px; padding: 20px 0;">
+        <p style="max-width:800px; margin: 0 auto 20px auto;">This game references the Savage Worlds game system, available from Pinnacle Entertainment Group at <a href="https://www.peginc.com">www.peginc.com</a>. Savage Worlds and all associated logos and trademarks are copyrights of Pinnacle Entertainment Group. Used with permission. Pinnacle makes no representation or warranty as to the quality, viability, or suitability for purpose of this product.</p>
+        <img src="{{ url_for('static', filename='SW_LOGO_FP_2018.png') }}" alt="Savage Worlds Logo" style="width:25%; height:auto; display:block; margin:0 auto;">
+    </footer>
+
     <script>
         let isGM = false;
 
