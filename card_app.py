@@ -133,7 +133,7 @@ HTML_TEMPLATE = '''
 <!DOCTYPE html>
 <html>
 <head>
-    <title>Savage Worlds Initiative Tracker</title>
+    <title>Savage Worlds Adventure Edition Initiative Tracker</title>
     <style>
         body {
             font-family: Arial, sans-serif;
@@ -341,8 +341,7 @@ HTML_TEMPLATE = '''
     </style>
 </head>
 <body>
-    <h1>Savage Worlds Adventure Edition</h1>
-    <div class="subtitle">Initiative Tracker</div>
+    <h1>Savage Worlds Adventure Edition Initiative Tracker</h1>
     
     <div id="loginSection" class="login-form hidden">
         <h3>GM Login</h3>
