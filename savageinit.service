@@ -26,8 +26,8 @@ After=network.target network-online.target
 User=YourUserName
 # Modify WorkingDirectory to point to where card_app.py is:
 WorkingDirectory=/mnt/media/savageinit/
-# Modify ExecStart to point to the locations of python3 and card_app.py
-ExecStart=/usr/bin/python3 /mnt/media/savageinit/card_app.py
+# Modify ExecStart to point to the locations of python3 and savageinit.py
+ExecStart=/usr/bin/python3 /mnt/media/savageinit/savageinit.py
 Restart=always
 RestartSec=5
 
