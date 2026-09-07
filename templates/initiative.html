@@ -2,6 +2,7 @@
 <html>
 <head>
     <title>Savage Worlds Adventure Edition Initiative Tracker</title>
+    <link rel="icon" type="image/x-icon" href="{{ url_for('static', filename='SW_LOGO_FP_2018_ICON.ico') }}">
     <style>
         body {
             font-family: Arial, sans-serif;
@@ -523,8 +524,8 @@
                                     const nameInput = row.querySelector('input[type="text"]');
                                     nameInput.dataset.index = index;
                                     nameInput.onblur = () => updateParticipantName(nameInput);
-                                    if (activeElement !== nameInput) {
-                                        nameInput.value = nameValue;
+                                    if (index !== focusedInputIndex) {
+                                        nameInput.value = p.name;
                                     }
 
                                     const traitContainer = row.querySelector('.trait-buttons');
@@ -566,20 +567,6 @@
                             
                             // 3. Remove any UI rows that were not found in the server data
                             rowsToRemove.forEach(row => row.remove());
-
-                            // --- CRITICAL FIX: Re-focus the element after redraw ---
-                            if (focusedInputIndex !== -1) {
-                                // Find the row that matches the index we saved
-                                const matchingRow = Array.from(list.querySelectorAll('.participant-row')).find(row => {
-                                    const input = row.querySelector('input[type="text"]');
-                                    return input && parseInt(input.dataset.index) === focusedInputIndex;
-                                });
-                                
-                                if (matchingRow) {
-                                    matchingRow.querySelector('input[type="text"]').focus();
-                                }
-                            }
-                            // ------------------------------------------------------------
 
                             // Find and focus on the latest added participant if nothing was being edited
                             if (focusedInputIndex === -1 && serverParticipants.length > currentRows.length) {

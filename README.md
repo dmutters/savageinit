@@ -10,13 +10,13 @@ The exact names of the dependencies and how to install them will vary depending 
 This is being developed on an Ubuntu-based Linux distribution, and instructions are written accordingly.
 
 ## Dependencies
-Python3, Flask
+Python3, Python3-Flask, Redis, Python3-Redis
 
 On Ubuntu:
-sudo apt install python3 python3-flask
+sudo apt install python3 python3-flask redis python3-redis
 
 ## Running The Application
-python3 card_app.py
+python3 savageinit.py
 
 (Stop the application with CTRL-C)
 
@@ -34,6 +34,10 @@ Other computers, go to: http://\<hostaddress\>:5000
 To make changes to initiative order, deal cards, etc., you must be logged in as the GM.
 
 The hardcoded GM password is: gamemaster
+
+You can change the password either by copying credentials.json.example to credentials.json and editing that file, or by running the application like this:
+
+python3 savageinit.py -\-gm-password SomePassword
 
 IF YOU CHANGE THE PASSWORD, BE AWARE THAT IT IS BEING SENT "IN THE CLEAR".  DO NOT USE THE SAME PASSWORD FOR ANYTHING ELSE.
 

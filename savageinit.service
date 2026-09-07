@@ -2,7 +2,7 @@
 #
 # First, modify the configuration, below, with
 # a non-root username and the locations of 
-# Python3 and card_app.py.
+# Python3 and savageinit.py.
 #
 # Then, copy savageinit.service into "/etc/systemd/system/".
 # 
@@ -24,7 +24,7 @@ After=network.target network-online.target
 [Service]
 # Set User to a non-root user:
 User=YourUserName
-# Modify WorkingDirectory to point to where card_app.py is:
+# Modify WorkingDirectory to point to where savageinit.py is:
 WorkingDirectory=/mnt/media/savageinit/
 # Modify ExecStart to point to the locations of python3 and savageinit.py
 ExecStart=/usr/bin/python3 /mnt/media/savageinit/savageinit.py
