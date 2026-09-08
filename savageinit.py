@@ -1,20 +1,70 @@
-from flask import Flask, render_template, request, jsonify, session, Response, stream_with_context
-from queue import Queue
-import threading
+from flask import Flask, render_template, request, jsonify, session, Response, stream_with_context, send_from_directory
+import argparse
 import json
-from functools import wraps
+import os
 import random
 import secrets
+from functools import wraps
+import redis
 
 app = Flask(__name__)
 app.secret_key = secrets.token_hex(16)
 
-# SSE message queues for broadcasting updates
-message_queues = []
-message_queues_lock = threading.Lock()
+# Initialize Redis client
+REDIS_HOST = os.environ.get('REDIS_HOST', 'localhost')
+REDIS_PORT = int(os.environ.get('REDIS_PORT', 6379))
+REDIS_DB = int(os.environ.get('REDIS_DB', 0))
+ROOM_ID = os.environ.get('ROOM_ID', 'dataset_a')  # Distinguishes Data Set A vs Data Set B
 
-# Simple GM password (in production, use proper authentication)
-GM_PASSWORD = "gamemaster"
+r = redis.Redis(host=REDIS_HOST, port=REDIS_PORT, db=REDIS_DB, decode_responses=True)
+
+# --- GM password resolution ---
+# Precedence: --gm-password command-line flag > gm_password in a credentials
+# file (--credentials-file, or ./credentials.json next to this script) >
+# hardcoded default. This runs at import time (not just under
+# `if __name__ == '__main__'`) so GM_PASSWORD is set correctly whether the
+# app is launched directly with `python savageinit-new.py` or imported by a
+# WSGI server like gunicorn.
+DEFAULT_CREDENTIALS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'credentials.json')
+
+def load_gm_password():
+    # parse_known_args() so this doesn't choke on unrelated args a WSGI
+    # server (gunicorn, flask run, etc.) may have been invoked with.
+    parser = argparse.ArgumentParser(add_help=False)
+    parser.add_argument('--gm-password', dest='gm_password', default=None)
+    parser.add_argument('--credentials-file', dest='credentials_file', default=None)
+    args, _ = parser.parse_known_args()
+
+    if args.gm_password:
+        return args.gm_password
+
+    credentials_path = args.credentials_file or DEFAULT_CREDENTIALS_FILE
+    if os.path.isfile(credentials_path):
+        try:
+            with open(credentials_path, 'r') as f:
+                creds = json.load(f)
+            password = creds.get('gm_password')
+            if password:
+                return password
+        except (json.JSONDecodeError, OSError) as e:
+            print(f"Warning: could not read GM password from {credentials_path}: {e}")
+
+    return 'gamemaster'
+
+GM_PASSWORD = load_gm_password()
+
+# --- Redis Storage Keys ---
+KEY_DECK = f"session:{ROOM_ID}:deck"
+KEY_PARTICIPANTS = f"session:{ROOM_ID}:participants"
+KEY_JOKER = f"session:{ROOM_ID}:joker_drawn"
+CHANNEL_UPDATES = f"channel:{ROOM_ID}:updates"
+LOCK_KEY = f"lock:{ROOM_ID}:state"
+
+# How long a request may hold the state lock before it's force-expired
+# (protects against a crashed worker leaving the lock held forever).
+LOCK_TIMEOUT = 10
+# How long a request will wait to acquire the lock before giving up.
+LOCK_BLOCKING_TIMEOUT = 5
 
 class Card:
     SUITS = ['Spades', 'Hearts', 'Diamonds', 'Clubs']
@@ -25,7 +75,6 @@ class Card:
         self.rank = rank
         
     def value(self):
-        """Return numeric value for sorting"""
         if self.rank == 'Joker':
             return 15
         elif self.rank == 'A':
@@ -40,7 +89,6 @@ class Card:
             return int(self.rank)
     
     def suit_value(self):
-        """Return suit value for sorting (Spades > Hearts > Diamonds > Clubs)"""
         if self.rank == 'Joker':
             return 4
         suit_order = {'Spades': 3, 'Hearts': 2, 'Diamonds': 1, 'Clubs': 0}
@@ -60,27 +108,53 @@ class Card:
             'suit_value': self.suit_value()
         }
 
-class Deck:
-    def __init__(self):
-        self.cards = []
-        for suit in Card.SUITS:
-            for rank in Card.RANKS:
-                self.cards.append(Card(suit, rank))
-        self.cards.append(Card('', 'Joker'))
-        self.cards.append(Card('', 'Joker'))
-        self.shuffle()
-    
-    def shuffle(self):
-        random.shuffle(self.cards)
-    
-    def draw(self, n=1):
-        drawn = []
-        for _ in range(min(n, len(self.cards))):
-            if len(self.cards) == 0:
-                break
-            drawn.append(self.cards.pop())
-        return drawn
-    
+def generate_full_deck():
+    cards = []
+    for suit in Card.SUITS:
+        for rank in Card.RANKS:
+            cards.append(Card(suit, rank).to_dict())
+    cards.append(Card('', 'Joker').to_dict())
+    cards.append(Card('', 'Joker').to_dict())
+    random.shuffle(cards)
+    return cards
+
+# --- Redis Helpers ---
+def get_state():
+    deck_json = r.get(KEY_DECK)
+    participants_json = r.get(KEY_PARTICIPANTS)
+    joker_val = r.get(KEY_JOKER)
+
+    if deck_json is None:
+        deck = generate_full_deck()
+        r.set(KEY_DECK, json.dumps(deck))
+    else:
+        deck = json.loads(deck_json)
+
+    if participants_json is None:
+        participants = []
+        r.set(KEY_PARTICIPANTS, json.dumps(participants))
+    else:
+        participants = json.loads(participants_json)
+
+    joker_drawn = joker_val == 'true' if joker_val else False
+
+    return deck, participants, joker_drawn
+
+def save_state(deck, participants, joker_drawn):
+    r.set(KEY_DECK, json.dumps(deck))
+    r.set(KEY_PARTICIPANTS, json.dumps(participants))
+    r.set(KEY_JOKER, 'true' if joker_drawn else 'false')
+
+def broadcast_update(deck, participants):
+    """Broadcast a state snapshot. Callers must pass the exact deck/participants
+    they just wrote via save_state(), so the broadcast can't race ahead of or
+    behind the write and doesn't need an extra Redis round trip to refetch it."""
+    data = {
+        'participants': serialize_participants(participants),
+        'deck_remaining': len(deck)
+    }
+    r.publish(CHANNEL_UPDATES, json.dumps(data))
+
 def serialize_participants(participants):
     serialized = []
     for p in participants:
@@ -98,11 +172,6 @@ def serialize_participants(participants):
         })
     return serialized
 
-# Global state
-deck = Deck()
-participants = []
-joker_drawn = False
-
 def gm_required(f):
     @wraps(f)
     def decorated_function(*args, **kwargs):
@@ -111,25 +180,34 @@ def gm_required(f):
         return f(*args, **kwargs)
     return decorated_function
 
-def broadcast_update():
-    """Broadcast state update to all connected clients"""
-    data = {
-        'participants': serialize_participants(participants),
-        'deck_remaining': len(deck.cards)
-    }
-    message = f"data: {json.dumps(data)}\n\n"
+def with_state_lock(f):
+    """Serialize read-modify-write access to this room's state.
 
-    with message_queues_lock:
-        dead_queues = []
-        for q in message_queues:
+    Every mutating route does get_state() -> mutate in Python -> save_state(),
+    which is not atomic on its own: two concurrent requests for the same room
+    could both read the same state, and whichever saves last would silently
+    clobber the other's change. This wraps the whole route body in a
+    Redis-backed lock scoped to ROOM_ID so only one request per room can be
+    in that read-modify-write section at a time.
+    """
+    @wraps(f)
+    def decorated_function(*args, **kwargs):
+        lock = r.lock(LOCK_KEY, timeout=LOCK_TIMEOUT, blocking_timeout=LOCK_BLOCKING_TIMEOUT)
+        acquired = lock.acquire(blocking=True)
+        if not acquired:
+            return jsonify({'error': 'Server is busy processing another update for this room. Please try again.'}), 503
+        try:
+            return f(*args, **kwargs)
+        finally:
             try:
-                q.put_nowait(message)
-            except:
-                dead_queues.append(q)
-        for q in dead_queues:
-            message_queues.remove(q)
+                lock.release()
+            except redis.exceptions.LockError:
+                # Lock already expired (e.g. request ran longer than LOCK_TIMEOUT)
+                # or was released elsewhere; nothing more to do.
+                pass
+    return decorated_function
 
-
+# --- Routes ---
 @app.route('/')
 def index():
     return render_template('initiative.html')
@@ -137,34 +215,44 @@ def index():
 @app.route('/stream')
 def stream():
     def event_stream():
-        q = Queue()
-        with message_queues_lock:
-            message_queues.append(q)
+        pubsub = r.pubsub()
+        pubsub.subscribe(CHANNEL_UPDATES)
         try:
-            # Send initial state
+            # Initial state payload
+            deck, participants, _ = get_state()
             initial_data = {
                 'participants': serialize_participants(participants),
-                'deck_remaining': len(deck.cards)
+                'deck_remaining': len(deck)
             }
             yield f"data: {json.dumps(initial_data)}\n\n"
 
-            # Keep connection alive and send updates
+            # Poll with a timeout instead of pubsub.listen(), which blocks
+            # indefinitely with no output. Without a periodic heartbeat,
+            # reverse proxies/load balancers will silently kill "idle"
+            # connections during quiet stretches between updates, and a
+            # disconnected client's subscription won't get cleaned up until
+            # the next published message wakes the generator back up.
             while True:
-                try:
-                    message = q.get(timeout=15)
-                    yield message
-                except Exception:
-                    # heartbeat to prevent buffering/timeout
+                message = pubsub.get_message(timeout=15)
+                if message is None:
+                    # No update within the timeout window - send a heartbeat
+                    # to keep the connection alive and let the WSGI server
+                    # notice a dropped client.
                     yield ": ping\n\n"
+                elif message['type'] == 'message':
+                    yield f"data: {message['data']}\n\n"
+                # Other message types (e.g. the 'subscribe' confirmation)
+                # are ignored and we just loop back around.
         except GeneratorExit:
             pass
         finally:
-            with message_queues_lock:
-                if q in message_queues:
-                    message_queues.remove(q)
+            try:
+                pubsub.unsubscribe(CHANNEL_UPDATES)
+                pubsub.close()
+            except Exception:
+                pass
 
     return Response(stream_with_context(event_stream()), mimetype='text/event-stream')
-
 
 @app.route('/check_auth')
 def check_auth():
@@ -186,34 +274,34 @@ def logout():
 @app.route('/get_participants')
 @gm_required
 def get_participants():
+    _, participants, _ = get_state()
     return jsonify({'participants': [p.copy() for p in participants]})
 
 @app.route('/update_name', methods=['POST'])
 @gm_required
+@with_state_lock
 def update_participant_name():
-    global participants
+    deck, participants, joker_drawn = get_state()
     data = request.json
     index = data.get('index')
     new_name = data.get('name')
 
     if 0 <= index < len(participants):
-        old_name = participants[index]['name']
-        
-        # Check for name uniqueness among all other participants
         if any(p['name'] == new_name for i, p in enumerate(participants) if i != index):
-            # If the name is a duplicate, alert the user and do not update
             return jsonify({'error': 'That name is already in use.'}), 400
         
         participants[index]['name'] = new_name
-        broadcast_update()
+        save_state(deck, participants, joker_drawn)
+        broadcast_update(deck, participants)
         return jsonify({'success': True})
 
     return jsonify({'error': 'Invalid participant index'}), 400
 
 @app.route('/update_traits', methods=['POST'])
 @gm_required
+@with_state_lock
 def update_participant_traits():
-    global participants
+    deck, participants, joker_drawn = get_state()
     data = request.json
     index = data.get('index')
     new_traits = data.get('traits', [])
@@ -222,13 +310,11 @@ def update_participant_traits():
         participants[index]['traits'] = new_traits
         participants[index]['trait_display'] = get_traits_display(new_traits)
         
-        # If the participant has cards, recalculate their active card based on new traits
         if participants[index]['cards']:
             cards = participants[index]['cards']
             additional_cards = participants[index]['additional_cards']
             participants[index]['active_card'] = determine_active_card(cards, new_traits, additional_cards)
             
-            # Re-sort the initiative list if traits were changed while initiative is active
             def initiative_sort_key(p):
                 if p.get('on_hold'):
                     return (1, 0, 0)
@@ -238,28 +324,30 @@ def update_participant_traits():
 
             participants.sort(key=initiative_sort_key)
         
-        broadcast_update()
+        save_state(deck, participants, joker_drawn)
+        broadcast_update(deck, participants)
         return jsonify({'success': True})
 
     return jsonify({'error': 'Invalid participant index'}), 400
 
 @app.route('/next_round', methods=['POST'])
 @gm_required
+@with_state_lock
 def next_round():
-    global participants, deck, joker_drawn
+    deck, participants, joker_drawn = get_state()
 
     if joker_drawn:
-        deck = Deck()
+        deck = generate_full_deck()
         joker_drawn = False 
     
-    # Pre-flight: verify we can draw for all non-held participants before
-    # clearing any existing cards. This prevents partial state on error.
     total_needed = sum(
         cards_needed_for_traits(p['traits'])
         for p in participants
         if p.get('name') and not p.get('on_hold')
     )
-    if not replenish_deck_if_needed(total_needed):
+    
+    deck, ok = replenish_deck_if_needed(deck, participants, total_needed)
+    if not ok:
         return jsonify({'error': 'Not enough cards available. Too many cards are currently active.'}), 400
 
     for p in participants:
@@ -274,11 +362,11 @@ def next_round():
         p['active_card'] = None
         p['additional_cards'] = []
 
-        cards_drawn = draw_for_participant(p['traits'])
+        deck, cards_drawn = draw_for_participant(deck, participants, p['traits'])
 
         if cards_drawn is None:
-            # Should not happen after a successful pre-flight, but guard anyway
-            broadcast_update()
+            save_state(deck, participants, joker_drawn)
+            broadcast_update(deck, participants)
             return jsonify({'error': 'Not enough cards available. Too many cards are currently active.'}), 400
 
         if cards_drawn:
@@ -288,9 +376,6 @@ def next_round():
             p['cards'] = cards_drawn
             p['active_card'] = determine_active_card(p['cards'], p['traits'], p['additional_cards'])
 
-
-    # Update the global joker flag  
-    # Sort participants: drawn cards first (by card value), then on-hold, then undrawn
     def next_round_sort_key(p):
         if p.get('on_hold'):
             return (1, 0, 0)
@@ -299,24 +384,18 @@ def next_round():
         return (2, 0, 0)
 
     participants.sort(key=next_round_sort_key)
-    
-    broadcast_update()
+    save_state(deck, participants, joker_drawn)
+    broadcast_update(deck, participants)
     return jsonify({'participants': serialize_participants(participants)})
 
 @app.route('/reset_deck', methods=['POST'])
 @gm_required
+@with_state_lock
 def reset_deck():
-    global participants, deck, joker_drawn
-    data = request.json
-    participants_data = data.get('participants', [])
-    
-    # Reset deck to 54 cards and shuffle
-    deck = Deck()
+    _, participants, _ = get_state()
+    deck = generate_full_deck()
     joker_drawn = False
     
-    # The client-side logic for reset_deck also sends participants, 
-    # but since the global list is authoritative, we don't rebuild it here.
-    # We only clear cards for the existing global participants (as done in new_encounter)
     for p in participants:
         p['cards'] = []
         p['active_card'] = None
@@ -325,66 +404,66 @@ def reset_deck():
         p['held_joker'] = False
         p['on_hold'] = False
 
-    
-    broadcast_update()
+    save_state(deck, participants, joker_drawn)
+    broadcast_update(deck, participants)
     return jsonify({'participants': serialize_participants(participants)})
 
 @app.route('/clear_initiative', methods=['POST'])
 @gm_required
+@with_state_lock
 def clear_initiative():
-    global deck, participants, joker_drawn
-    deck = Deck()
+    deck = generate_full_deck()
     participants = []
     joker_drawn = False
-    broadcast_update()
+    save_state(deck, participants, joker_drawn)
+    broadcast_update(deck, participants)
     return jsonify({'participants': []})
 
 @app.route('/remove_participant', methods=['POST'])
 @gm_required
+@with_state_lock
 def remove_participant():
-    global participants
+    deck, participants, joker_drawn = get_state()
     data = request.json
     index = data.get('index')
     if 0 <= index < len(participants):
         participants.pop(index)
-    broadcast_update()
+    save_state(deck, participants, joker_drawn)
+    broadcast_update(deck, participants)
     return jsonify({'participants': serialize_participants(participants)})
 
 @app.route('/draw_additional', methods=['POST'])
 @gm_required
+@with_state_lock
 def draw_additional():
-    global participants, deck, joker_drawn
+    deck, participants, joker_drawn = get_state()
     data = request.json
     index = data.get('index')
     
     if 0 <= index < len(participants):
         if participants[index].get('on_hold'):
             return jsonify({'error': 'Participant is on Hold'}), 400
-        if count_active_cards() >= 54:
+        if count_active_cards(participants) >= 54:
             return jsonify({'error': 'Not enough cards available. Too many cards are currently active.'}), 400
-        additional_card = deck.draw(1)
-        if not additional_card:
+        
+        if len(deck) == 0:
             return jsonify({'error': 'Not enough cards available. Too many cards are currently active.'}), 400
-        card_dict = additional_card[0].to_dict()
+            
+        additional_card = deck.pop()
+        card_dict = additional_card
         participants[index]['cards'].append(card_dict)
         
-        # Check for joker
         if card_dict['rank'] == 'Joker':
             joker_drawn = True
         
-        # Track this as an additional card
         if 'additional_cards' not in participants[index]:
             participants[index]['additional_cards'] = []
         participants[index]['additional_cards'].append(card_dict)
         
-        # Recalculate active card using the standard logic helper
         p = participants[index]
         p['active_card'] = determine_active_card(p['cards'], p['traits'], p['additional_cards'])
-
-        # Mark participant as having drawn
         participants[index]['has_drawn'] = True
     
-    # Re-sort: drawn cards first (by card value desc), then on-hold, then undrawn
     def initiative_sort_key(p):
         if p.get('on_hold'):
             return (1, 0, 0)
@@ -393,14 +472,15 @@ def draw_additional():
         return (2, 0, 0)
 
     participants.sort(key=initiative_sort_key)
-    
-    broadcast_update()
+    save_state(deck, participants, joker_drawn)
+    broadcast_update(deck, participants)
     return jsonify({'participants': serialize_participants(participants)})
 
 @app.route('/deal_in', methods=['POST'])
 @gm_required
+@with_state_lock
 def deal_in():
-    global participants, deck, joker_drawn
+    deck, participants, joker_drawn = get_state()
     data = request.json
     name = data.get('name')
     traits = data.get('traits', [])
@@ -408,20 +488,17 @@ def deal_in():
     if not name:
         return jsonify({'error': 'Participant name required'}), 400
     
-    # Look for existing participant
     existing = next((p for p in participants if p['name'] == name), None)
 
     if existing:
         if existing.get('has_drawn'):
             return jsonify({'error': 'Participant already dealt in'}), 400
-        
         if existing.get('on_hold'):
             return jsonify({'error': 'Participant is on Hold'}), 400
         
-        # Update traits and draw cards
         existing['traits'] = traits
         existing['trait_display'] = get_traits_display(traits)
-        cards = draw_for_participant(traits)
+        deck, cards = draw_for_participant(deck, participants, traits)
         if cards is None:
             return jsonify({'error': 'Not enough cards available. Too many cards are currently active.'}), 400
         existing['cards'] = cards
@@ -432,8 +509,7 @@ def deal_in():
             joker_drawn = True
 
     else:
-        # New participant
-        cards = draw_for_participant(traits)
+        deck, cards = draw_for_participant(deck, participants, traits)
         if cards is None:
             return jsonify({'error': 'Not enough cards available. Too many cards are currently active.'}), 400
         participant = {
@@ -453,7 +529,6 @@ def deal_in():
 
         participants.append(participant)
 
-    # Sort: drawn cards first (by card value desc), then on-hold, then undrawn
     def initiative_sort_key(p):
         if p.get('on_hold'):
             return (1, 0, 0)
@@ -462,165 +537,114 @@ def deal_in():
         return (2, 0, 0)
 
     participants.sort(key=initiative_sort_key)
-
-    broadcast_update()
+    save_state(deck, participants, joker_drawn)
+    broadcast_update(deck, participants)
     return jsonify({'participants': serialize_participants(participants)})
-
-
-
 
 @app.route('/get_initiative')
 def get_initiative():
+    _, participants, _ = get_state()
     return jsonify({'participants': serialize_participants(participants)})
 
 @app.route('/deck_info')
 def deck_info():
-    return jsonify({'remaining': len(deck.cards)})
+    deck, _, _ = get_state()
+    return jsonify({'remaining': len(deck)})
 
-def count_active_cards():
-    """Count all cards currently assigned to participants."""
-    total = 0
-    for p in participants:
-        total += len(p.get('cards', []))
-    return total
+def count_active_cards(participants):
+    return sum(len(p.get('cards', [])) for p in participants)
 
-def replenish_deck_if_needed(cards_needed):
-    """If the deck has fewer cards than needed, silently reshuffle all
-    unassigned cards back in. Returns False if even after replenishing
-    there are not enough cards (i.e. too many active cards)."""
-    if len(deck.cards) >= cards_needed:
-        return True
-    # Count cards currently held by participants
-    active = count_active_cards()
-    total_available = 54 - active
-    if total_available < cards_needed:
-        return False
-    # Rebuild deck from scratch and remove active cards
-    active_cards = []
-    for p in participants:
-        active_cards.extend(p.get('cards', []))
-    new_deck = Deck()  # creates and shuffles a full 54-card deck
-    # Remove active non-Joker cards by rank+suit match
-    # Remove active Jokers by count (both are identical: rank='Joker', suit='')
+def replenish_deck_if_needed(deck, participants, cards_needed):
+    if len(deck) >= cards_needed:
+        return deck, True
+
+    active = count_active_cards(participants)
+    if (54 - active) < cards_needed:
+        return deck, False
+
+    active_cards = [c for p in participants for c in p.get('cards', [])]
+    new_deck = generate_full_deck()
+
     jokers_to_remove = sum(1 for ac in active_cards if ac['rank'] == 'Joker')
     for ac in active_cards:
         if ac['rank'] == 'Joker':
-            continue  # handled separately below
-        for i, c in enumerate(new_deck.cards):
-            if c.rank == ac['rank'] and c.suit == ac['suit']:
-                new_deck.cards.pop(i)
+            continue
+        for i, c in enumerate(new_deck):
+            if c['rank'] == ac['rank'] and c['suit'] == ac['suit']:
+                new_deck.pop(i)
                 break
+
     removed = 0
     i = 0
-    while i < len(new_deck.cards) and removed < jokers_to_remove:
-        if new_deck.cards[i].rank == 'Joker':
-            new_deck.cards.pop(i)
+    while i < len(new_deck) and removed < jokers_to_remove:
+        if new_deck[i]['rank'] == 'Joker':
+            new_deck.pop(i)
             removed += 1
         else:
             i += 1
-    deck.cards = new_deck.cards
-    return True
+
+    return new_deck, True
 
 def cards_needed_for_traits(traits):
-    """Return the base number of cards a participant is entitled to
-    given their traits. Does not account for Quick's conditional redraw."""
     if 'improved_level_headed' in traits:
         return 3
     elif 'level_headed' in traits or 'hesitant' in traits:
         return 2
     return 1
 
-def draw_for_participant(traits):
-    """Draw cards based on traits. Returns None if the deck cannot be
-    replenished enough to fulfil the draw (too many active cards)."""
-    num_cards = 1
+def draw_for_participant(deck, participants, traits):
+    num_cards = cards_needed_for_traits(traits)
+    original_deck = list(deck)  # Backup the deck state
 
-    # Determine base number of cards to draw
-    if 'improved_level_headed' in traits:
-        num_cards = 3
-    elif 'level_headed' in traits:
-        num_cards = 2
-    elif 'hesitant' in traits:
-        num_cards = 2
+    deck, ok = replenish_deck_if_needed(deck, participants, num_cards)
+    if not ok:
+        return original_deck, None
 
-    if not replenish_deck_if_needed(num_cards):
-        return None
+    drawn = [deck.pop() for _ in range(min(num_cards, len(deck)))]
 
-    cards = deck.draw(num_cards)
+    if 'quick' in traits and drawn:
+        first_card = drawn[0]
+        first_val = first_card['value']
+        if first_val <= 5 and first_card['rank'] != 'Joker':
+            deck, ok = replenish_deck_if_needed(deck, participants, 1)
+            if not ok:
+                return original_deck, None  # Restore the backup to prevent data loss
+            if deck:
+                drawn.append(deck.pop())
 
-    # Handle Quick trait
-    if 'quick' in traits and cards:
-        first_card = cards[0]
-        if first_card.value() <= 5 and first_card.rank != 'Joker':
-            if not replenish_deck_if_needed(1):
-                return None
-            additional = deck.draw(1)
-            if additional:
-                cards.extend(additional)
-
-    return [card.to_dict() for card in cards]
+    return deck, drawn
 
 def determine_active_card(cards, traits, additional_cards):
-    """Determine which card is active based on traits and additional cards"""
     if not cards:
         return None
-    
-    # If there are additional cards, check if any is better than current active
     if additional_cards:
-        # Find the current active card (without considering additional cards)
         initial_cards = [c for c in cards if c not in additional_cards]
         if initial_cards:
             current_active = get_active_from_initial(initial_cards, traits)
-            
-            # Check if any additional card is better
             best_additional = max(additional_cards, key=lambda c: (c['value'], c['suit_value']))
-            
-            if (best_additional['value'], best_additional['suit_value']) > \
-               (current_active['value'], current_active['suit_value']):
+            if (best_additional['value'], best_additional['suit_value']) > (current_active['value'], current_active['suit_value']):
                 return best_additional
-            
             return current_active
-    
-    # No additional cards, use normal logic
     return get_active_from_initial(cards, traits)
 
 def get_active_from_initial(cards, traits):
-    """
-    Determine the active initiative card based on the specified SWADE trait precedence:
-    Joker > Level Headed/Improved Level Headed > Hesitant > Quick/Default.
-    """
     if not cards:
         return None
-    
-    # 1. Joker Precedence: If a Joker is drawn, it supersedes all other rules.
     jokers = [c for c in cards if c['rank'] == 'Joker']
     if jokers:
         return jokers[0]
-    
-    # 2. Level Headed/Improved Level Headed: Use the highest card from all drawn cards.
     if 'level_headed' in traits or 'improved_level_headed' in traits:
         return max(cards, key=lambda c: (c['value'], c['suit_value']))
-    
-    # 3. Hesitant: Use the worst card (Joker check handled above).
     elif 'hesitant' in traits:
         return min(cards, key=lambda c: (c['value'], c['suit_value']))
-    
-    # 4. Quick (and Default):
     elif 'quick' in traits:
-        # If Quick triggered, there should be 2 cards.
-        if len(cards) == 2:
-            if cards[0]['value'] <= 5 and cards[0]['rank'] != 'Joker':
-                return max(cards[0], cards[1], key=lambda c: (c['value'], c['suit_value']))
-        
-        # If Quick didn't trigger, or only one card was drawn, use the first card.
+        if len(cards) == 2 and cards[0]['value'] <= 5 and cards[0]['rank'] != 'Joker':
+            return max(cards[0], cards[1], key=lambda c: (c['value'], c['suit_value']))
         return cards[0]
-
-    # 5. Default: Use the first card drawn.
     else:
         return cards[0]
 
 def get_traits_display(traits):
-    """Get display names for traits"""
     trait_names = {
         'level_headed': 'Level Headed',
         'improved_level_headed': 'Improved Level Headed',
@@ -631,8 +655,9 @@ def get_traits_display(traits):
 
 @app.route('/toggle_hidden', methods=['POST'])
 @gm_required
+@with_state_lock
 def toggle_hidden():
-    global participants
+    deck, participants, joker_drawn = get_state()
     data = request.json
     index = data.get('index')
 
@@ -641,13 +666,15 @@ def toggle_hidden():
 
     p = participants[index]
     p['is_hidden'] = not p.get('is_hidden', False)
-    broadcast_update()
+    save_state(deck, participants, joker_drawn)
+    broadcast_update(deck, participants)
     return jsonify({'participants': serialize_participants(participants)})
 
 @app.route('/toggle_hold', methods=['POST'])
 @gm_required
+@with_state_lock
 def toggle_hold():
-    global participants
+    deck, participants, joker_drawn = get_state()
     data = request.json
     index = data.get('index')
 
@@ -656,27 +683,21 @@ def toggle_hold():
 
     p = participants[index]
 
-    # Participants must have drawn cards before they can go on hold
     if not p.get('on_hold') and not p.get('has_drawn'):
         return jsonify({'error': 'Participant has not drawn cards yet'}), 400
 
     p['on_hold'] = not p.get('on_hold', False)
 
     if p['on_hold']:
-        # Toggling ON: check if any drawn card was a joker and remember it
         p['held_joker'] = any(c.get('rank') == 'Joker' for c in p.get('cards', []))
     else:
-        # Toggling OFF: clear joker memory along with all card state
         p['held_joker'] = False
 
-    # Whether toggling on or off, clear all card state so they
-    # re-enter initiative cleanly once hold is released.
     p['cards'] = []
     p['active_card'] = None
     p['additional_cards'] = []
     p['has_drawn'] = False
 
-    # Sort: drawn first (by value desc), then on-hold, then undrawn
     def initiative_sort_key(p):
         if p.get('on_hold'):
             return (1, 0, 0)
@@ -685,18 +706,17 @@ def toggle_hold():
         return (2, 0, 0)
 
     participants.sort(key=initiative_sort_key)
-    broadcast_update()
+    save_state(deck, participants, joker_drawn)
+    broadcast_update(deck, participants)
     return jsonify({'participants': serialize_participants(participants)})
 
 @app.route('/add_participant_placeholder', methods=['POST'])
 @gm_required
+@with_state_lock
 def add_participant_placeholder():
-    global participants
+    deck, participants, joker_drawn = get_state()
     
-    # Use a generic name that will be updated by the client
-    name = f"New Participant"
-    
-    # Ensure unique names (or handle duplicates by appending a number)
+    name = "New Participant"
     original_name = name
     counter = 1
     temp_name = original_name
@@ -717,8 +737,13 @@ def add_participant_placeholder():
         'is_hidden': False
     }
     participants.append(new_participant)
-    broadcast_update()
+    save_state(deck, participants, joker_drawn)
+    broadcast_update(deck, participants)
     return jsonify({'success': True, 'participant': new_participant})
 
+@app.route('/favicon.ico')
+def favicon():
+    return send_from_directory(os.path.join(app.root_path, 'static'), 'SW_LOGO_FP_2018_ICON.ico', mimetype='image/x-icon')
+
 if __name__ == '__main__':
-    app.run(debug=True, port=5000, host='0.0.0.0', threaded=True)
+    app.run(debug=True, port=int(os.environ.get('PORT', 5000)), host='0.0.0.0', threaded=True)
