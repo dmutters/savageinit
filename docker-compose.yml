@@ -23,7 +23,7 @@ services:
     environment:
       - REDIS_HOST=redis
       - REDIS_PORT=6379
-      - REDIS_ID=dataset_a
+      - ROOM_ID=dataset_a
       # Change SECRET_KEY to any long, random string that you like.  Base64 encoding is recommended.
       - SECRET_KEY=YXNkZmVmZ3V5bmFzZGZvcTM4ZjBhZWR5OXJndHkzcTRqbnRwYWRpc2RoZzhhNHRyCg==
     depends_on:
