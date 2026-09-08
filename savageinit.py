@@ -8,7 +8,10 @@ from functools import wraps
 import redis
 
 app = Flask(__name__)
-app.secret_key = secrets.token_hex(16)
+
+# Use the environment variable if available (Docker/Production); 
+# otherwise, use a stable fallback key for local python execution.
+app.secret_key = os.environ.get('SECRET_KEY', 'savage-worlds-local-development-fallback-key')
 
 # Initialize Redis client
 REDIS_HOST = os.environ.get('REDIS_HOST', 'localhost')
