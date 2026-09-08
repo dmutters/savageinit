@@ -20,9 +20,6 @@ python3 savageinit.py
 
 (Stop the application with CTRL-C)
 
-## SystemD Service
-To run the application persistently in the background, follow the instructions found in savageinit.service.
-
 ## Using The Application
 The application will be hosted on port 5000 over HTTP.  It is accessed using a web browser.
 
@@ -43,3 +40,28 @@ IF YOU CHANGE THE PASSWORD, BE AWARE THAT IT IS BEING SENT "IN THE CLEAR".  DO N
 
 ## Non-GM Users
 Non-GM users do not need to log in.  They will only see the current initiative order.
+
+## SystemD Service
+To run the application persistently in the background, follow the instructions found in savageinit.service.
+
+## Docker
+To run the application in Docker, install Docker Compose using these instructions:
+
+https://docs.docker.com/compose/install/
+
+Then, add your user to the "docker" group:
+
+sudo usermod -aG docker YourUserName
+
+Log out or reboot and then log back in.
+
+Finally, build the images and start the containers:
+
+cd /wherever/you/put/savaginit
+
+docker compose up -d
+
+To tear down the containers and delete the images, do:
+
+docker compose down --rmi all
+

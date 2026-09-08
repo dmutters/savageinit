@@ -1,0 +1,39 @@
+services:
+  redis:
+    image: redis:alpine
+    container_name: savage_redis
+    restart: unless-stopped
+    command: redis-server --save 60 1 --loglevel warning
+    volumes:
+      - redis_data:/data
+    networks:
+      - savage-net
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  web:
+    build: .
+    container_name: savage_web
+    restart: unless-stopped
+    ports:
+      - "5000:5000"
+    environment:
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - REDIS_ID=dataset_a
+      # Change SECRET_KEY to any long, random string that you like.  Base64 encoding is recommended.
+      - SECRET_KEY=YXNkZmVmZ3V5bmFzZGZvcTM4ZjBhZWR5OXJndHkzcTRqbnRwYWRpc2RoZzhhNHRyCg==
+    depends_on:
+      - redis
+    networks:
+      - savage-net
+
+volumes:
+  redis_data:
+
+networks:
+  savage-net:
+    driver: bridge
