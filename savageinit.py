@@ -603,14 +603,20 @@ def draw_for_participant(deck, participants, traits):
     drawn = [deck.pop() for _ in range(min(num_cards, len(deck)))]
 
     if 'quick' in traits and drawn:
-        first_card = drawn[0]
-        first_val = first_card['value']
-        if first_val <= 5 and first_card['rank'] != 'Joker':
+        initial_active = get_active_from_initial(drawn, traits)
+
+        while initial_active and initial_active['value'] <= 5 and initial_active['rank'] != 'Joker':
             deck, ok = replenish_deck_if_needed(deck, participants, 1)
             if not ok:
                 return original_deck, None  # Restore the backup to prevent data loss
-            if deck:
-                drawn.append(deck.pop())
+            if not deck:
+                break
+
+            new_card = deck.pop()
+            drawn.append(new_card)
+
+            # Re-evaluate the active card with the new addition to see if it's still 5 or lower
+            initial_active = get_active_from_initial(drawn, traits)
 
     return deck, drawn
 
@@ -638,8 +644,8 @@ def get_active_from_initial(cards, traits):
     elif 'hesitant' in traits:
         return min(cards, key=lambda c: (c['value'], c['suit_value']))
     elif 'quick' in traits:
-        if len(cards) == 2 and cards[0]['value'] <= 5 and cards[0]['rank'] != 'Joker':
-            return max(cards[0], cards[1], key=lambda c: (c['value'], c['suit_value']))
+        if cards[0]['value'] <= 5 and cards[0]['rank'] != 'Joker':
+            return max(cards, key=lambda c: (c['value'], c['suit_value']))
         return cards[0]
     else:
         return cards[0]
