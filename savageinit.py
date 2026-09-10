@@ -1,4 +1,4 @@
-from flask import Flask, render_template, request, jsonify, session, Response, stream_with_context, send_from_directory
+from flask import Flask, render_template, request, jsonify, session, Response, stream_with_context, send_from_directory, url_for, redirect
 import argparse
 import json
 import os
@@ -752,7 +752,7 @@ def add_participant_placeholder():
 
 @app.route('/favicon.ico')
 def favicon():
-    return send_from_directory(os.path.join(app.root_path, 'static'), 'SW_LOGO_FP_2018_ICON.ico', mimetype='image/x-icon')
+    return send_from_directory(os.path.join(app.root_path, 'static'), 'SW_LOGO_FP_2018_ICON.ico', mimetype='image/vnd.microsoft.icon')
 
 if __name__ == '__main__':
     app.run(debug=True, port=int(os.environ.get('PORT', 5000)), host='0.0.0.0', threaded=True)
